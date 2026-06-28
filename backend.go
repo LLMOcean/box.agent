@@ -17,6 +17,24 @@ type llmBackend struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
+
+	// modelOverride, if set, replaces whatever model name arrives in the
+	// chat request before it's sent to the backend. The router only ever
+	// sends the part of the model string after the provider prefix (e.g.
+	// "chat", with "tcclaviger/" stripped off by the router's own
+	// provider/model split), but a backend like vLLM identifies its loaded
+	// model by the full repo id it was started with (e.g.
+	// "tcclaviger/Qwen3.6-40B-..."). Set this when those two don't match.
+	modelOverride string
+}
+
+// effectiveModel returns the model name to send to the backend: the
+// override if one is configured, otherwise whatever the router requested.
+func (b *llmBackend) effectiveModel(requested string) string {
+	if b.modelOverride != "" {
+		return b.modelOverride
+	}
+	return requested
 }
 
 type openaiMessage struct {
@@ -49,7 +67,7 @@ func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
 // chat performs a non-streaming completion and returns the full content,
 // usage, and normalized finish reason.
 func (b *llmBackend) chat(model string, msgs []openaiMessage) (string, *Usage, string, error) {
-	httpReq, err := b.newRequest(openaiChatRequest{Model: model, Messages: msgs})
+	httpReq, err := b.newRequest(openaiChatRequest{Model: b.effectiveModel(model), Messages: msgs})
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -96,7 +114,7 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage) (string, *Usage, s
 // stream performs a streaming completion, calling onChunk for every
 // incremental delta and onFinal exactly once when the stream ends.
 func (b *llmBackend) stream(model string, msgs []openaiMessage, onChunk func(string), onFinal func(*Usage, string)) error {
-	httpReq, err := b.newRequest(openaiChatRequest{Model: model, Messages: msgs, Stream: true})
+	httpReq, err := b.newRequest(openaiChatRequest{Model: b.effectiveModel(model), Messages: msgs, Stream: true})
 	if err != nil {
 		return err
 	}

@@ -34,6 +34,7 @@ go build -o box-agent .
 | `-token` | `AGENT_TOKEN` | *(required)* | Shared secret for that provider name. |
 | `-llm-url` | — | `http://localhost:11434` | Base URL of the local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for the local LLM server, if it requires one. |
+| `-backend-model` | — | *(empty — pass through)* | Override the model name sent to the local LLM backend. Use this when the backend's own model id doesn't match the router's registered model name — e.g. the router only ever forwards the part of `provider/model` after the provider prefix, but vLLM identifies its loaded model by the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`, not just `Qwen3.6-40B-...`). |
 
 Run multiple instances with the same `-provider`/`-token` (against the same
 or different local LLM servers) for redundancy/load distribution — the
