@@ -11,8 +11,12 @@ import "encoding/json"
 // ToolCalls is only ever sent back on a "response"/"final" frame (agent ->
 // router) - accumulated across a stream and attached once, like Usage and
 // FinishReason, rather than streamed as incremental argument deltas.
+//
+// "benchmark" / "benchmark_result" are a box.agent-local extension (see
+// docs/BENCHMARK.md) and are not yet part of the upstream router.agent
+// protocol docs copied into this repo.
 type Frame struct {
-	Type         string           `json:"type"` // "chat" | "hello" | "chunk" | "response" | "final" | "error"
+	Type         string           `json:"type"` // "chat" | "hello" | "benchmark" | "chunk" | "response" | "final" | "error" | "benchmark_result"
 	RequestID    string           `json:"request_id"`
 	Model        string           `json:"model,omitempty"`
 	System       string           `json:"system,omitempty"`
@@ -27,6 +31,8 @@ type Frame struct {
 	ToolCalls    []ToolCall       `json:"tool_calls,omitempty"`
 	Error        string           `json:"error,omitempty"`
 	Capabilities *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
+	Prompt       string           `json:"prompt,omitempty"`       // "benchmark" request: prompt to send (defaults to a built-in one if empty)
+	Benchmark    *BenchmarkResult `json:"benchmark,omitempty"`    // "benchmark_result" response
 
 	// Sampling/output-control parameters - "chat" only, forwarded to the
 	// local backend verbatim (same field names/types OpenAI's API uses; see

@@ -61,18 +61,28 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 			log.Printf("bad frame: %v", err)
 			continue
 		}
-		if f.Type != "chat" {
-			continue
+		switch f.Type {
+		case "chat":
+			// Multiple requests can be in flight on one connection at once —
+			// handle each independently so a slow request doesn't block others.
+			wg.Add(1)
+			go func(req Frame) {
+				defer wg.Done()
+				handleChat(req, backend, send)
+			}(f)
+		case "benchmark":
+			wg.Add(1)
+			go func(req Frame) {
+				defer wg.Done()
+				handleBenchmark(req, backend, send)
+			}(f)
 		}
-
-		// Multiple requests can be in flight on one connection at once —
-		// handle each independently so a slow request doesn't block others.
-		wg.Add(1)
-		go func(req Frame) {
-			defer wg.Done()
-			handleChat(req, backend, send)
-		}(f)
 	}
+}
+
+func handleBenchmark(req Frame, backend *llmBackend, send func(Frame) error) {
+	result := runBenchmark(backend, req.Model, req.Prompt)
+	send(Frame{Type: "benchmark_result", RequestID: req.RequestID, Benchmark: &result})
 }
 
 func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
