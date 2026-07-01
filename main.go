@@ -6,6 +6,13 @@
 //
 // See router.agent's docs/AGENT_PROTOCOL.md and docs/AGENT_BUILD_SPEC.md
 // for the protocol and design this implements.
+//
+// Two one-shot subcommands manage models on a local Ollama server directly
+// (no router involvement -- run these on the box itself, as root: installing
+// ollama itself, if it isn't already, needs it):
+//
+//	box-agent install-model [-llm-url URL] <model>
+//	box-agent delete-model  [-llm-url URL] <model>
 package main
 
 import (
@@ -20,6 +27,24 @@ import (
 )
 
 func main() {
+	// install-model/delete-model are recognized only as the literal first
+	// argument, so any daemon invocation starting with a "-flag" (the only
+	// form used before these subcommands existed) still falls through to
+	// runAgent unchanged.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install-model":
+			runInstallModel(os.Args[2:])
+			return
+		case "delete-model":
+			runDeleteModel(os.Args[2:])
+			return
+		}
+	}
+	runAgent()
+}
+
+func runAgent() {
 	routerURL := flag.String("router", "ws://localhost:8080", "router base URL (ws:// or wss://)")
 	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
 	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN)")
@@ -119,4 +144,44 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// runInstallModel is the "box-agent install-model" subcommand: makes sure
+// ollama itself is installed (running its official install script if not —
+// requires root), then runs `ollama pull` for model.
+func runInstallModel(args []string) {
+	fs := flag.NewFlagSet("install-model", flag.ExitOnError)
+	llmURL := fs.String("llm-url", "http://localhost:11434", "base URL of the local Ollama server")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: box-agent install-model [-llm-url URL] <model>")
+		os.Exit(2)
+	}
+	model := fs.Arg(0)
+
+	if err := ensureOllamaInstalled(); err != nil {
+		log.Fatalf("install failed: %v", err)
+	}
+	if err := pullModel(*llmURL, model); err != nil {
+		log.Fatalf("install failed: %v", err)
+	}
+	log.Printf("installed %q", model)
+}
+
+// runDeleteModel is the "box-agent delete-model" subcommand: runs
+// `ollama rm` for model.
+func runDeleteModel(args []string) {
+	fs := flag.NewFlagSet("delete-model", flag.ExitOnError)
+	llmURL := fs.String("llm-url", "http://localhost:11434", "base URL of the local Ollama server")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: box-agent delete-model [-llm-url URL] <model>")
+		os.Exit(2)
+	}
+	model := fs.Arg(0)
+
+	if err := deleteModel(*llmURL, model); err != nil {
+		log.Fatalf("delete failed: %v", err)
+	}
+	log.Printf("deleted %q", model)
 }

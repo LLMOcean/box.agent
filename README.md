@@ -48,6 +48,19 @@ or different local LLM servers) for redundancy/load distribution — the
 router pools and round-robins all connections under one provider name
 automatically.
 
+## Installing a model
+
+Two one-shot subcommands manage models on the local Ollama server directly
+(no router involvement — run these on the box itself, as root):
+
+```
+box-agent install-model [-llm-url URL] <model>
+box-agent delete-model  [-llm-url URL] <model>
+```
+
+See [`docs/MODEL_DEPLOY.md`](docs/MODEL_DEPLOY.md) for requirements, exit
+codes, and a scripted rollout example.
+
 ## Behavior
 
 - On boot, registers with the management API (`-api-url`/`-api-token`),
@@ -102,8 +115,10 @@ server is also containerized on the same host/network.
 
 ## Files
 
-- `main.go` — flag parsing, API registration at boot, reconnect loop.
+- `main.go` — flag parsing, API registration at boot, reconnect loop, `install-model`/`delete-model` subcommands.
 - `connection.go` — WebSocket connect/read/dispatch, per-request concurrency.
 - `backend.go` — translation to/from the local OpenAI-compatible LLM server.
 - `api.go` — registration with the management API.
 - `frame.go` — the wire `Frame`/`Message`/`Usage` types.
+- `benchmark.go` — host/LLM diagnostic snapshot, see [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
+- `ollama.go` — installing/removing models via `ollama`, see [`docs/MODEL_DEPLOY.md`](docs/MODEL_DEPLOY.md).
