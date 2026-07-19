@@ -1,5 +1,9 @@
 # box.agent
 
+> Looking for a step-by-step guide to running box.agent against the
+> platform (getting your token, verifying the connection, troubleshooting)?
+> See [`docs/USAGE.md`](docs/USAGE.md) — written for the control panel.
+
 A remote WebSocket agent for [router.agent](https://github.com/LLMOcean/router.agent).
 Run this next to a self-hosted, open-source LLM server (Ollama, vLLM,
 llama.cpp-server, text-generation-inference — anything OpenAI-compatible).
