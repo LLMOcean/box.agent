@@ -24,7 +24,8 @@ go build -o box-agent .
   -router wss://router.example.com \
   -provider oss-llama3 \
   -token "$AGENT_TOKEN" \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -api-token "$API_TOKEN"
 ```
 
 | Flag | Env fallback | Default | Meaning |
@@ -35,6 +36,8 @@ go build -o box-agent .
 | `-llm-url` | — | `http://localhost:11434` | Base URL of the local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for the local LLM server, if it requires one. |
 | `-backend-model` | — | *(empty — pass through)* | Override the model name sent to the local LLM backend. Use this when the backend's own model id doesn't match the router's registered model name — e.g. the router only ever forwards the part of `provider/model` after the provider prefix, but vLLM identifies its loaded model by the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`, not just `Qwen3.6-40B-...`). |
+| `-api-url` | — | `http://localhost:8000` | Base URL of the management API used to register this box-agent instance and sync which model it's serving. |
+| `-api-token` | `API_TOKEN` | *(required)* | Bearer token identifying this agent instance to the management API. |
 
 Run multiple instances with the same `-provider`/`-token` (against the same
 or different local LLM servers) for redundancy/load distribution — the
@@ -43,6 +46,12 @@ automatically.
 
 ## Behavior
 
+- On boot, registers with the management API (`-api-url`/`-api-token`),
+  reporting which model this instance is serving — either `-backend-model`
+  if set, or whatever the local LLM server's `/v1/models` endpoint reports
+  as loaded. This lets the API keep track of which model is running behind
+  each agent instance's token. Registration happens once at startup, before
+  the router connect loop; a failure here is fatal.
 - Reconnects automatically (fixed 5s delay) if the connection to the router
   drops.
 - Answers the router's WebSocket pings so the connection isn't reaped as
@@ -71,7 +80,8 @@ server is also containerized on the same host/network.
 
 ## Files
 
-- `main.go` — flag parsing, reconnect loop.
+- `main.go` — flag parsing, API registration at boot, reconnect loop.
 - `connection.go` — WebSocket connect/read/dispatch, per-request concurrency.
 - `backend.go` — translation to/from the local OpenAI-compatible LLM server.
+- `api.go` — registration with the management API.
 - `frame.go` — the wire `Frame`/`Message`/`Usage` types.

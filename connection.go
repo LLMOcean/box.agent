@@ -74,23 +74,28 @@ func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
 		msgs = append(msgs, openaiMessage{Role: "system", Content: req.System})
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content})
+		msgs = append(msgs, openaiMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCalls:  m.ToolCalls,
+			ToolCallID: m.ToolCallID,
+		})
 	}
 
 	if !req.Stream {
-		content, usage, finishReason, err := backend.chat(req.Model, msgs)
+		content, usage, finishReason, toolCalls, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice)
 		if err != nil {
 			send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})
 			return
 		}
-		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason})
+		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		return
 	}
 
-	err := backend.stream(req.Model, msgs,
+	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice,
 		func(chunk string) { send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk}) },
-		func(usage *Usage, finishReason string) {
-			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason})
+		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
+			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		})
 	if err != nil {
 		send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})

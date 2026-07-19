@@ -26,14 +26,30 @@ func main() {
 	llmURL := flag.String("llm-url", "http://localhost:11434", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "override the model name sent to the local LLM backend (use when the backend's own model id differs from the router's registered model name, e.g. vLLM expects the full repo id it was started with)")
+	apiURL := flag.String("api-url", "http://localhost:8000", "base URL of the management API used to register this box-agent and sync its running model")
+	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN)")
 	flag.Parse()
 
 	if *provider == "" || *token == "" {
 		log.Fatal("both -provider and -token (or AGENT_TOKEN env var) are required")
 	}
+	if *apiToken == "" {
+		log.Fatal("-api-token (or API_TOKEN env var) is required")
+	}
 
 	connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(*provider))
 	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{}}
+
+	model, err := backend.runningModel()
+	if err != nil {
+		log.Fatalf("determine running model: %v", err)
+	}
+
+	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
+	if err := api.registerModel(model); err != nil {
+		log.Fatalf("register with API: %v", err)
+	}
+	log.Printf("registered with API: model=%s", model)
 
 	for {
 		if err := connectAndServe(connectURL, *token, backend); err != nil {
