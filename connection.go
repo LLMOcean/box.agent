@@ -12,7 +12,7 @@ import (
 
 // connectAndServe dials the router and serves chat requests until the
 // connection drops, at which point it returns so the caller can reconnect.
-func connectAndServe(connectURL, token string, backend *llmBackend) error {
+func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities) error {
 	conn, _, err := websocket.DefaultDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", connectURL, err)
@@ -31,6 +31,13 @@ func connectAndServe(connectURL, token string, backend *llmBackend) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return conn.WriteMessage(websocket.TextMessage, data)
+	}
+
+	// One-time, optional capability self-report - not fatal if it fails to
+	// send, since the router treats a missing hello exactly like an agent
+	// that predates this handshake (see docs/AGENT_PROTOCOL.md §1a).
+	if err := send(Frame{Type: "hello", Capabilities: caps}); err != nil {
+		log.Printf("failed to send hello frame: %v", err)
 	}
 
 	// Answer router-initiated pings so the connection isn't reaped as dead.

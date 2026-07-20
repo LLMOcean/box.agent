@@ -3,9 +3,11 @@
 > Copied from [`router.agent`](https://github.com/LLMOcean/router.agent)'s
 > `docs/AGENT_BUILD_SPEC.md`. This repository (`box.agent`) is the standalone
 > implementation this spec describes — `main.go`, `connection.go`,
-> `backend.go`, and `frame.go` at the repo root already follow it exactly.
-> Kept here as the design reference for anyone maintaining or re-deriving
-> this implementation; re-sync from the router repo if it changes there.
+> `backend.go`, and `frame.go` at the repo root already follow it, with a few
+> extras (management-API registration, tool-calling passthrough) noted where
+> they diverge from the minimal spec below. Kept here as the design reference
+> for anyone maintaining or re-deriving this implementation; re-sync from the
+> router repo if it changes there.
 
 This is a self-contained spec for building the remote WebSocket agent as its
 **own Go module**, deployable independently of `router.agent` (e.g. on a GPU
@@ -40,16 +42,28 @@ protocol + connection lifecycle + config + packaging.
   one agent process talks to one local backend. Run multiple agent processes
   (see §8) if you want redundancy; the router round-robins across however
   many connect under the same provider name.
-- It does not need a database, config API, or any credential beyond the one
-  static token — see `AGENT_PROTOCOL.md` §1 for why (and the planned,
-  not-yet-built upgrade path for per-instance orchestrator-issued tokens).
+- It does not need a database or config API — just one per-instance token
+  issued by the orchestrator (`POST /llmocean/agent-instances/authenticate`,
+  see `AGENT_PROTOCOL.md` §1) and its own local LLM backend. (This repo
+  additionally registers with a management API at startup — see `api.go` —
+  which is an extra on top of the minimal spec, not part of the router
+  protocol itself.)
+- It does not have its provider name/model verified anywhere — it declares
+  what it serves itself, via `?provider=` at connect time (e.g. by querying
+  its local backend's model list), and the router trusts that value as-is.
+  There's currently no orchestrator-backed verification of that claim; see
+  `AGENT_PROTOCOL.md` §1 for where this is headed.
 
 ## 3. Requirements checklist
 
 A correct implementation must:
 
-- [ ] Dial `<router>/v1/agents/connect?provider=<name>` with
-      `Authorization: Bearer <token>`.
+- [ ] Dial `<router>/v1/agents/connect?provider=<provider>/<model>` (or just
+      `?provider=<model>` for a bare, un-namespaced registration) with
+      `Authorization: Bearer <token>` (a per-instance token from the
+      orchestrator). The model portion is determined however you like (e.g.
+      querying the local backend's model list) — the router has no other way
+      to learn it. See `AGENT_PROTOCOL.md` §1 for the full split convention.
 - [ ] Reconnect on any connection error/close, with a delay between
       attempts (fixed 5s is sufficient — see §4).
 - [ ] Answer WebSocket pings from the router with pongs (most libraries do
@@ -75,13 +89,19 @@ A correct implementation must:
 
 ```
 loop forever:
-    dial (router_url + "/v1/agents/connect?provider=" + provider), header Authorization: Bearer <token>
+    model := discover the model this agent serves (e.g. query the local
+             backend's GET /v1/models and take the first entry, or a
+             configured override)
+    declared := model, or "<namespace>/" + model if a provider namespace is configured
+    dial (router_url + "/v1/agents/connect?provider=" + declared), header Authorization: Bearer <token>
     if dial fails:
         log error, sleep 5s, retry
 
     on connect:
         log "connected"
+        send one "hello" frame with self-reported capabilities (optional, see §4a)
         set a ping handler that replies with a pong
+
         loop:
             read one message
             if read fails (connection closed/reset):
@@ -96,10 +116,26 @@ behavior over exotic resilience (no circuit breakers anywhere else in that
 system either). Exponential backoff/jitter is a reasonable upgrade if you
 expect frequent restarts at scale, but is not required.
 
-There is no handshake beyond the HTTP upgrade — no protocol version
-negotiation, no capability exchange. If the protocol ever needs to evolve,
-new frame `type` values are added and old agents simply ignore types they
-don't recognize (per the requirement above).
+There is no protocol version negotiation at the HTTP upgrade. The model this
+agent serves is declared up front, in the `?provider=` query param on the
+connect URL itself (see §1 of `AGENT_PROTOCOL.md`), not negotiated after
+connecting. If the protocol ever needs to evolve, new frame `type` values are
+added and old agents simply ignore types they don't recognize (per the
+requirement above).
+
+## 4a. Capability self-report (`"hello"` frame)
+
+Immediately after connecting (before the ping handler is even wired up, in
+this implementation — see `connection.go`), the agent sends one `"hello"`
+frame declaring what it serves (see `AGENT_PROTOCOL.md` §1a):
+
+```json
+{"type": "hello", "capabilities": {"context_length": 32768, "quantization": "fp8", "input_modalities": ["text"], "output_modalities": ["text"], "supported_features": ["tools"]}}
+```
+
+This is optional and purely additive — every field may be zero/empty if
+unreported, and a `"hello"` send failure is logged but not fatal (the
+connection keeps serving). See §8 for the flags that populate it.
 
 ## 5. Wire protocol (reference — see `AGENT_PROTOCOL.md` for the full spec)
 
@@ -107,17 +143,18 @@ Every message, both directions, is one JSON text frame:
 
 ```go
 type Frame struct {
-    Type         string    `json:"type"` // "chat" | "chunk" | "response" | "final" | "error"
-    RequestID    string    `json:"request_id"`
-    Model        string    `json:"model,omitempty"`
-    System       string    `json:"system,omitempty"`
-    Messages     []Message `json:"messages,omitempty"`
-    Stream       bool      `json:"stream,omitempty"`
-    MaxTokens    int       `json:"max_tokens,omitempty"`
-    Content      string    `json:"content,omitempty"`
-    Usage        *Usage    `json:"usage,omitempty"`
-    FinishReason string    `json:"finish_reason,omitempty"`
-    Error        string    `json:"error,omitempty"`
+    Type         string        `json:"type"` // "chat" | "hello" | "chunk" | "response" | "final" | "error"
+    RequestID    string        `json:"request_id"`
+    Model        string        `json:"model,omitempty"`
+    System       string        `json:"system,omitempty"`
+    Messages     []Message     `json:"messages,omitempty"`
+    Stream       bool          `json:"stream,omitempty"`
+    MaxTokens    int           `json:"max_tokens,omitempty"`
+    Content      string        `json:"content,omitempty"`
+    Usage        *Usage        `json:"usage,omitempty"`
+    FinishReason string        `json:"finish_reason,omitempty"`
+    Error        string        `json:"error,omitempty"`
+    Capabilities *Capabilities `json:"capabilities,omitempty"` // "hello" only, see §4a
 }
 
 type Message struct {
@@ -129,14 +166,29 @@ type Usage struct {
     InputTokens  int `json:"input_tokens"`
     OutputTokens int `json:"output_tokens"`
 }
+
+// Capabilities is the optional, operator-asserted one-time self-report sent
+// in a "hello" frame right after connecting (AGENT_PROTOCOL.md §1a). Every
+// field is optional; omit what you don't know.
+type Capabilities struct {
+    ContextLength     int      `json:"context_length,omitempty"`
+    MaxOutputLength   int      `json:"max_output_length,omitempty"`
+    InputModalities   []string `json:"input_modalities,omitempty"`
+    OutputModalities  []string `json:"output_modalities,omitempty"`
+    Quantization      string   `json:"quantization,omitempty"`
+    SupportedFeatures []string `json:"supported_features,omitempty"`
+}
 ```
 
 Define these locally in the standalone module — do not depend on
 `router.agent`'s Go module to get them. They are deliberately tiny and
-stable. (This repo defines them in `frame.go`.)
+stable. (This repo defines them in `frame.go`, plus `Tools`/`ToolChoice`/
+`ToolCalls` fields for tool-calling passthrough — an extra on top of the
+minimal spec shown here.)
 
 The router only ever sends `"chat"` frames. The agent only ever sends
-`"chunk"`, `"response"`, `"final"`, or `"error"` frames.
+`"hello"` (once, right after connecting), `"chunk"`, `"response"`, `"final"`,
+or `"error"` frames.
 
 ## 6. Concurrency model
 
@@ -192,8 +244,9 @@ Translate this 1:1 into the agent's outgoing frames:
 ### Reference Go implementation
 
 This is the exact logic already verified working end-to-end against the
-router — see `backend.go` in this repo. Reproduced here for spec
-completeness:
+router — see `backend.go` in this repo, which additionally forwards
+`Tools`/`ToolChoice` and supports a `-backend-model` override (both omitted
+below for spec-minimal clarity):
 
 ```go
 type llmBackend struct {
@@ -227,6 +280,45 @@ func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
         req.Header.Set("Authorization", "Bearer "+b.apiKey)
     }
     return req, nil
+}
+
+// runningModel queries GET /v1/models (implemented by Ollama, vLLM,
+// llama.cpp-server, etc.) and returns the first model ID reported — this is
+// what's declared via ?provider= at connect time when no override is given.
+func (b *llmBackend) runningModel() (string, error) {
+    req, err := http.NewRequest(http.MethodGet, b.baseURL+"/v1/models", nil)
+    if err != nil {
+        return "", fmt.Errorf("build request: %w", err)
+    }
+    if b.apiKey != "" {
+        req.Header.Set("Authorization", "Bearer "+b.apiKey)
+    }
+    resp, err := b.client.Do(req)
+    if err != nil {
+        return "", fmt.Errorf("send request: %w", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("read response: %w", err)
+    }
+    if resp.StatusCode != http.StatusOK {
+        return "", fmt.Errorf("llm backend error (status %d): %s", resp.StatusCode, string(body))
+    }
+
+    var mr struct {
+        Data []struct {
+            ID string `json:"id"`
+        } `json:"data"`
+    }
+    if err := json.Unmarshal(body, &mr); err != nil {
+        return "", fmt.Errorf("unmarshal response: %w", err)
+    }
+    if len(mr.Data) == 0 {
+        return "", fmt.Errorf("backend reported no models")
+    }
+    return mr.Data[0].ID, nil
 }
 
 func (b *llmBackend) chat(model string, msgs []openaiMessage) (string, *Usage, string, error) {
@@ -339,15 +431,23 @@ func (b *llmBackend) stream(model string, msgs []openaiMessage, onChunk func(str
 
 ### Connection + dispatch loop
 
-This is reproduced from `connection.go` and `main.go` in this repo:
+This is reproduced from `connection.go` and `main.go` in this repo (which
+additionally sends the `"hello"` frame from §4a and registers with a
+management API at startup — omitted below for spec-minimal clarity):
 
 ```go
 func main() {
     routerURL := flag.String("router", "ws://localhost:8080", "router base URL (ws:// or wss://)")
-    provider := flag.String("provider", "", "agent provider name (must match an agents: key in the router's config.yaml)")
-    token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN)")
+    provider := flag.String("provider", "", "agent provider name (e.g. \"plusclouds/deepseek-v3\", or a bare model name)")
+    token := flag.String("token", os.Getenv("AGENT_TOKEN"), "per-instance token issued by the orchestrator (or set AGENT_TOKEN)")
     llmURL := flag.String("llm-url", "http://localhost:11434", "base URL of the local OpenAI-compatible LLM server")
     llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if required")
+    contextLength := flag.Int("context-length", 0, "context window size in tokens this backend supports (0 = unreported)")
+    maxOutputLength := flag.Int("max-output-length", 0, "max output tokens this backend supports (0 = unreported)")
+    quantization := flag.String("quantization", "", "quantization of the served model, e.g. \"fp8\", \"int4\" (empty = unreported)")
+    inputModalities := flag.String("input-modalities", "text", "comma-separated input modalities this model accepts")
+    outputModalities := flag.String("output-modalities", "text", "comma-separated output modalities this model produces")
+    supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\"")
     flag.Parse()
 
     if *provider == "" || *token == "" {
@@ -357,15 +457,40 @@ func main() {
     connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(*provider))
     backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, client: &http.Client{}}
 
+    caps := &Capabilities{
+        ContextLength:     *contextLength,
+        MaxOutputLength:   *maxOutputLength,
+        Quantization:      *quantization,
+        InputModalities:   splitCSV(*inputModalities),
+        OutputModalities:  splitCSV(*outputModalities),
+        SupportedFeatures: splitCSV(*supportedFeatures),
+    }
+
     for {
-        if err := connectAndServe(connectURL, *token, backend); err != nil {
+        if err := connectAndServe(connectURL, *token, backend, caps); err != nil {
             log.Printf("connection error: %v — reconnecting in 5s", err)
         }
         time.Sleep(5 * time.Second)
     }
 }
 
-func connectAndServe(connectURL, token string, backend *llmBackend) error {
+// splitCSV splits a comma-separated flag value into a trimmed slice, or nil
+// for an empty string (so it's omitted from the "hello" frame entirely).
+func splitCSV(s string) []string {
+    if s == "" {
+        return nil
+    }
+    parts := strings.Split(s, ",")
+    out := make([]string, 0, len(parts))
+    for _, p := range parts {
+        if p = strings.TrimSpace(p); p != "" {
+            out = append(out, p)
+        }
+    }
+    return out
+}
+
+func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities) error {
     conn, _, err := websocket.DefaultDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
     if err != nil {
         return fmt.Errorf("dial %s: %w", connectURL, err)
@@ -382,6 +507,10 @@ func connectAndServe(connectURL, token string, backend *llmBackend) error {
         writeMu.Lock()
         defer writeMu.Unlock()
         return conn.WriteMessage(websocket.TextMessage, data)
+    }
+
+    if err := send(Frame{Type: "hello", Capabilities: caps}); err != nil {
+        log.Printf("failed to send hello frame: %v", err)
     }
 
     conn.SetPingHandler(func(appData string) error {
@@ -452,16 +581,24 @@ CLI flags (with env var fallback for secrets, so they don't show up in
 | Flag | Env fallback | Default | Meaning |
 |---|---|---|---|
 | `-router` | — | `ws://localhost:8080` | Router base URL (`ws://` or `wss://`). |
-| `-provider` | — | *(required)* | Provider name; must match an `agents:` key in the router's config. |
-| `-token` | `AGENT_TOKEN` | *(required)* | Shared secret for that provider name. |
+| `-provider` | — | *(required)* | Provider/model to declare, e.g. `plusclouds/deepseek-v3`, or a bare model name. See `AGENT_PROTOCOL.md` §1. |
+| `-token` | `AGENT_TOKEN` | *(required)* | Per-instance token issued by the orchestrator. |
 | `-llm-url` | — | `http://localhost:11434` | Base URL of the local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for the local LLM server, if it requires one. |
+| `-backend-model` | — | *(empty)* | Override the model name sent to the local backend, when it differs from the router-facing name (e.g. vLLM expects the full repo id it was started with). This repo's extra, not part of the minimal spec. |
+| `-api-url` / `-api-token` | — / `API_TOKEN` | — | Management-API registration (this repo's extra — see `api.go`; not part of the router protocol itself). |
+| `-context-length` | — | `0` | Context window size in tokens, sent in the `"hello"` capability self-report (§4a, `AGENT_PROTOCOL.md` §1a). `0` = unreported. |
+| `-max-output-length` | — | `0` | Max output tokens the backend supports, sent in `"hello"`. `0` = unreported. |
+| `-quantization` | — | *(empty)* | e.g. `"fp8"`, `"int4"`, sent in `"hello"`. Empty = unreported. |
+| `-input-modalities` | — | `"text"` | Comma-separated input modalities, sent in `"hello"`. |
+| `-output-modalities` | — | `"text"` | Comma-separated output modalities, sent in `"hello"`. |
+| `-supported-features` | — | *(empty)* | Comma-separated capability tags, e.g. `"tools,json_mode"`, sent in `"hello"`. Empty = none declared. |
 
-Running two instances with the same `-provider`/`-token` (against the same
-or different local LLM servers) is exactly how you get redundancy/load
-distribution — the router pools and round-robins all connections under one
-provider name automatically; no special flag or coordination needed on the
-agent side.
+Running two instances with the same `-provider`/distinct tokens (against the
+same or different local LLM servers) is exactly how you get redundancy/load
+distribution — the router pools and round-robins all connections declaring
+the identical provider/model automatically; no special flag or coordination
+needed on the agent side.
 
 ## 9. Module setup
 
@@ -504,6 +641,13 @@ Build the binary, then verify against a running router:
    request fails promptly instead of hanging — then restart the agent and
    confirm it reconnects and `/v1/agents/status` shows it live again within
    ~5 seconds.
-7. Start a second instance with the same `-provider`/`-token` and confirm
-   `/v1/agents/status` shows 2 connections, and that requests alternate
-   between the two (round-robin).
+7. Start a second instance with the same `-provider` and its own token, and
+   confirm `/v1/agents/status` shows 2 connections, and that requests
+   alternate between the two (round-robin).
+8. Start it with non-default `-context-length`/`-quantization`/etc. values
+   and confirm the router has recorded them (once `GET /v1/models` exists on
+   the router — see `router.agent`'s
+   `docs/openrouter/01-provider-integration.md`). Confirm an agent started
+   with none of these flags set still connects and serves chat requests
+   exactly as before — the capability self-report is optional and additive,
+   never required.

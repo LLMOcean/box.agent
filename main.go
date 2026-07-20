@@ -28,6 +28,12 @@ func main() {
 	backendModel := flag.String("backend-model", "", "override the model name sent to the local LLM backend (use when the backend's own model id differs from the router's registered model name, e.g. vLLM expects the full repo id it was started with)")
 	apiURL := flag.String("api-url", "http://localhost:8000", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN)")
+	contextLength := flag.Int("context-length", 0, "context window size in tokens this backend supports (0 = unreported)")
+	maxOutputLength := flag.Int("max-output-length", 0, "max output tokens this backend supports (0 = unreported)")
+	quantization := flag.String("quantization", "", "quantization of the served model, e.g. \"fp8\", \"int4\" (empty = unreported)")
+	inputModalities := flag.String("input-modalities", "text", "comma-separated input modalities this model accepts")
+	outputModalities := flag.String("output-modalities", "text", "comma-separated output modalities this model produces")
+	supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\" (empty = none declared)")
 	flag.Parse()
 
 	if *provider == "" || *token == "" {
@@ -51,10 +57,36 @@ func main() {
 	}
 	log.Printf("registered with API: model=%s", model)
 
+	caps := &Capabilities{
+		ContextLength:     *contextLength,
+		MaxOutputLength:   *maxOutputLength,
+		Quantization:      *quantization,
+		InputModalities:   splitCSV(*inputModalities),
+		OutputModalities:  splitCSV(*outputModalities),
+		SupportedFeatures: splitCSV(*supportedFeatures),
+	}
+
 	for {
-		if err := connectAndServe(connectURL, *token, backend); err != nil {
+		if err := connectAndServe(connectURL, *token, backend, caps); err != nil {
 			log.Printf("connection error: %v — reconnecting in 5s", err)
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// splitCSV splits a comma-separated flag value into a trimmed slice, or nil
+// for an empty string (so it's omitted from the "hello" frame entirely
+// rather than sent as an empty-but-present list).
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

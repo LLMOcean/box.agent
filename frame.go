@@ -12,7 +12,7 @@ import "encoding/json"
 // router) - accumulated across a stream and attached once, like Usage and
 // FinishReason, rather than streamed as incremental argument deltas.
 type Frame struct {
-	Type         string           `json:"type"` // "chat" | "chunk" | "response" | "final" | "error"
+	Type         string           `json:"type"` // "chat" | "hello" | "chunk" | "response" | "final" | "error"
 	RequestID    string           `json:"request_id"`
 	Model        string           `json:"model,omitempty"`
 	System       string           `json:"system,omitempty"`
@@ -26,6 +26,22 @@ type Frame struct {
 	FinishReason string           `json:"finish_reason,omitempty"`
 	ToolCalls    []ToolCall       `json:"tool_calls,omitempty"`
 	Error        string           `json:"error,omitempty"`
+	Capabilities *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
+}
+
+// Capabilities is this agent's optional, operator-asserted one-time
+// self-report of what its local backend supports, sent in a "hello" frame
+// immediately after connecting (see router.agent's docs/AGENT_PROTOCOL.md
+// §1a). Every field is optional — omit what you don't know; the router
+// treats a missing/never-sent Capabilities exactly as it did before this
+// frame type existed.
+type Capabilities struct {
+	ContextLength     int      `json:"context_length,omitempty"`
+	MaxOutputLength   int      `json:"max_output_length,omitempty"`
+	InputModalities   []string `json:"input_modalities,omitempty"`
+	OutputModalities  []string `json:"output_modalities,omitempty"`
+	Quantization      string   `json:"quantization,omitempty"`
+	SupportedFeatures []string `json:"supported_features,omitempty"`
 }
 
 // Message is a single chat turn, used only inside a "chat" Frame.

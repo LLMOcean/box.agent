@@ -27,27 +27,93 @@ folder.
 ## 1. Connect handshake
 
 ```
-GET /v1/agents/connect?provider=<name>
+GET /v1/agents/connect?provider=<provider>/<model>
 Authorization: Bearer <token>
 ```
 
-- `provider` — the logical provider name this agent serves requests for (must
-  match a key under `agents:` in the router's `config.yaml`). Multiple agent
-  processes may connect with the same `provider` value — the router
-  round-robins requests across all of them.
-- `token` — the static shared token configured for that provider name
-  (`agents.<name>.token` in `config.yaml`). Today this is a single shared
-  secret per provider name, not a per-instance credential — see
-  `router.agent`'s `docs/ORCHESTRATOR_API.md` §7 for the planned
-  per-instance login flow.
+- `token` — a per-instance token issued by the orchestrator (`POST
+  /llmocean/agent-instances/authenticate` — see `router.agent`'s
+  `docs/ORCHESTRATOR_API.md` §7). The router validates it against the
+  orchestrator on every connect, purely for audit/logging (agent instance ID,
+  account, etc.) — it carries no provider/model declaration of its own.
+- `provider` — declared by the agent itself at connect time; there's no
+  static declaration of this anywhere else. Split on the first `/`, same
+  convention used everywhere else in the router:
+  - `<provider>/<model>` (e.g. `plusclouds/deepseek-v3`) registers a
+    connection under the provider namespace `plusclouds`, serving model
+    `deepseek-v3`. Customers route to it with
+    `{"model": "plusclouds/deepseek-v3"}` — same "provider/model" addressing
+    used for `claude`/`openai`. A provider namespace can host several
+    different models across different connections; the router only ever
+    routes a request to a connection actually serving the requested model
+    (see `GET /v1/agents/status`, which reports live counts per
+    `provider/model` pair).
+  - A bare value with no `/` (e.g. `deepseek-v3`) registers under that name
+    with itself as both provider and model — customers address it with
+    just `{"model": "deepseek-v3"}`, no prefix. This is the same behavior as
+    before provider namespaces existed.
+  - Multiple agent instances declaring the identical `provider/model` (or
+    identical bare name) pool together and the router round-robins requests
+    across them; this is the only load-distribution mechanism — it's
+    name-based, not orchestrator-authorized grouping.
+- This implementation determines the model by querying its local
+  OpenAI-compatible backend's `GET /v1/models` and using the first entry (or
+  the operator-supplied `-backend-model` override), optionally prefixed with
+  a `-provider` namespace — see `backend.go`'s `runningModel()` and
+  `main.go`.
 
 On success, the router responds with the standard WebSocket `101 Switching
-Protocols` upgrade and the connection is added to that provider's pool. On
-failure (`provider` missing, bad/missing bearer token, unknown provider
-name), the router responds with a plain `400`/`401` and does not upgrade.
+Protocols` upgrade. On failure (missing `provider`, missing/malformed bearer
+token, or the orchestrator rejects it), the router responds with a plain
+`400`/`401` and does not upgrade; a `503` means the orchestrator itself was
+unreachable — safe to retry with backoff, unlike a `401`.
 
 The agent should reconnect with backoff if the connection drops — there is no
 session to resume; every request is self-contained (see below).
+
+## 1a. Capability self-report (`hello` frame)
+
+Immediately after the WebSocket upgrade completes — before any `chat`
+traffic — the agent may send one `hello` frame declaring what it serves:
+
+```json
+{
+  "type": "hello",
+  "capabilities": {
+    "context_length": 32768,
+    "max_output_length": 4096,
+    "input_modalities": ["text"],
+    "output_modalities": ["text"],
+    "quantization": "fp8",
+    "supported_features": ["tools"]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `context_length` | Context window size in tokens. |
+| `max_output_length` | Max output tokens the backend supports. |
+| `input_modalities` / `output_modalities` | e.g. `["text"]`, `["text","image"]`. |
+| `quantization` | e.g. `"fp8"`, `"int4"`. |
+| `supported_features` | Capability tags the backend actually supports, e.g. `["tools","json_mode"]`. |
+
+All fields are optional and operator-asserted — the router does not verify
+them against the backend. They feed the router's `/v1/models` catalog
+(taking precedence over any statically-declared metadata for that model,
+since a connected agent is the more current ground truth) — see
+`router.agent`'s `docs/openrouter/01-provider-integration.md`.
+
+Sending `hello` is optional and this is purely additive: an agent that never
+sends one behaves exactly as agents did before this frame type existed — the
+router just has zero-value capability data for it. `hello` is never sent in
+response to anything and has no reply.
+
+This implementation sends `hello` unconditionally right after connecting
+(see `connectAndServe` in `connection.go`), built from the
+`-context-length`/`-max-output-length`/`-quantization`/`-input-modalities`/
+`-output-modalities`/`-supported-features` flags (all optional; see
+`AGENT_BUILD_SPEC.md` §8).
 
 ## 2. Keepalive
 
@@ -79,17 +145,20 @@ shape (fields not relevant to a given `type` are omitted):
 
 | Field | Type | Used by | Description |
 |---|---|---|---|
-| `type` | string | all | `"chat"` (router→agent), `"chunk"`, `"response"`, `"final"`, `"error"` (agent→router) |
-| `request_id` | string | all | Correlates every frame of one request. Generated by the router on `"chat"`; echoed back verbatim on every response frame. One physical connection carries many concurrent requests at once — never reuse another request's ID. |
+| `type` | string | all | `"chat"` (router→agent), `"chunk"`, `"response"`, `"final"`, `"error"` (agent→router), `"hello"` (agent→router, optional, once) |
+| `request_id` | string | all | Correlates every frame of one request. Generated by the router on `"chat"`; echoed back verbatim on every response frame. One physical connection carries many concurrent requests at once — never reuse another request's ID. Omitted/empty on `"hello"`, which has no reply. |
 | `model` | string | `chat` | Exact model string to run. |
 | `system` | string | `chat` | System prompt, if any. |
 | `messages` | array | `chat` | `[{"role": "user"\|"assistant", "content": "..."}]`. System-role messages are never sent here — they're already folded into `system`. |
 | `stream` | bool | `chat` | `true` → respond with one or more `"chunk"` frames followed by exactly one `"final"` frame. `false` → respond with exactly one `"response"` frame. |
 | `max_tokens` | int | `chat` | Output token cap, if the caller specified one. |
+| `tools` / `tool_choice` | array / raw | `chat` | Forwarded to the local backend as-is; see `backend.go`. |
 | `content` | string | `chunk`, `response` | Output text. For `chunk`, an incremental delta (not cumulative). For `response`, the full output. |
 | `usage` | object | `response`, `final` | `{"input_tokens": int, "output_tokens": int}`. Omit `cost_usd` — the router computes cost from its own pricing config. |
 | `finish_reason` | string | `response`, `final` | One of `"stop"`, `"length"`, `"tool_calls"`, `"content_filter"` — normalize to this vocabulary regardless of what the underlying LLM server reports. |
+| `tool_calls` | array | `response`, `final` | Accumulated across a stream and attached once, like `usage`/`finish_reason`, not streamed incrementally. |
 | `error` | string | `error` | Human-readable error message. Sent instead of `response`/`final` if the request failed. |
+| `capabilities` | object | `hello` | See §1a. |
 
 ## 4. Non-streaming exchange
 
