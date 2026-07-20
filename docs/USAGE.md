@@ -27,7 +27,24 @@ Router  <--WebSocket tunnel--  box-agent  --HTTP-->  your local LLM server
 
 ## 2. Get the binary
 
-Download the latest release from
+The quickest way to get running: download and run in one step with
+[`deploy/install-and-run.sh`](../deploy/install-and-run.sh) — it fetches
+the latest release binary and execs it with whatever flags you pass it:
+
+```
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh | bash -s -- \
+  -router ws://chat.llmocean.com:8080 \
+  -provider plusclouds/qwen5.0-with-extras \
+  -token "$REGISTRATION_TOKEN" \
+  -api-url https://api.plusclouds.com \
+  -api-token "$REGISTRATION_TOKEN" \
+  -llm-url http://localhost:11434
+```
+
+Set `VERSION=v1.1.2` (env var) to pin a specific release instead of
+`latest`.
+
+Otherwise, download a release binary directly from
 [github.com/LLMOcean/box.agent/releases](https://github.com/LLMOcean/box.agent/releases),
 or build from source:
 
