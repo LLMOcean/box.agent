@@ -51,6 +51,11 @@ type openaiChatRequest struct {
 	MaxTokens  int              `json:"max_tokens,omitempty"`
 	Tools      []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice json.RawMessage  `json:"tool_choice,omitempty"`
+
+	// Sampling parameters, forwarded verbatim from the router's chat frame -
+	// same field names most OpenAI-compatible servers (Ollama, vLLM) already
+	// expect. See SamplingParams in frame.go.
+	SamplingParams
 }
 
 func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
@@ -71,13 +76,14 @@ func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
 
 // chat performs a non-streaming completion and returns the full content,
 // usage, normalized finish reason, and any tool calls the model made.
-func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage) (string, *Usage, string, []ToolCall, error) {
+func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams) (string, *Usage, string, []ToolCall, error) {
 	httpReq, err := b.newRequest(openaiChatRequest{
-		Model:      b.effectiveModel(model),
-		Messages:   msgs,
-		MaxTokens:  maxTokens,
-		Tools:      tools,
-		ToolChoice: toolChoice,
+		Model:          b.effectiveModel(model),
+		Messages:       msgs,
+		MaxTokens:      maxTokens,
+		Tools:          tools,
+		ToolChoice:     toolChoice,
+		SamplingParams: params,
 	})
 	if err != nil {
 		return "", nil, "", nil, err
@@ -174,14 +180,15 @@ func (b *llmBackend) runningModel() (string, error) {
 // calls are accumulated across the stream (vLLM, like OpenAI, streams them
 // as incremental per-index argument deltas) and passed to onFinal whole,
 // rather than forwarded chunk by chunk.
-func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, onChunk func(string), onFinal func(*Usage, string, []ToolCall)) error {
+func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams, onChunk func(string), onFinal func(*Usage, string, []ToolCall)) error {
 	httpReq, err := b.newRequest(openaiChatRequest{
-		Model:      b.effectiveModel(model),
-		Messages:   msgs,
-		Stream:     true,
-		MaxTokens:  maxTokens,
-		Tools:      tools,
-		ToolChoice: toolChoice,
+		Model:          b.effectiveModel(model),
+		Messages:       msgs,
+		Stream:         true,
+		MaxTokens:      maxTokens,
+		Tools:          tools,
+		ToolChoice:     toolChoice,
+		SamplingParams: params,
 	})
 	if err != nil {
 		return err

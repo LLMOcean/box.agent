@@ -27,6 +27,37 @@ type Frame struct {
 	ToolCalls    []ToolCall       `json:"tool_calls,omitempty"`
 	Error        string           `json:"error,omitempty"`
 	Capabilities *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
+
+	// Sampling/output-control parameters - "chat" only, forwarded to the
+	// local backend verbatim (same field names/types OpenAI's API uses; see
+	// SamplingParams). Whether the local backend actually honors any given
+	// one isn't this agent's concern - forward what's set and let the
+	// backend ignore what it doesn't support.
+	SamplingParams
+}
+
+// SamplingParams is the optional sampling/output-control block of a "chat"
+// frame - see router.agent's docs/openrouter/02-sampling-parameters.md.
+// Embedded directly into Frame (not nested under a JSON sub-object) so the
+// wire shape matches router.agent's own wsagent.Frame field-for-field.
+type SamplingParams struct {
+	Temperature       *float64           `json:"temperature,omitempty"`
+	TopP              *float64           `json:"top_p,omitempty"`
+	TopK              *int               `json:"top_k,omitempty"`
+	FrequencyPenalty  *float64           `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float64           `json:"presence_penalty,omitempty"`
+	RepetitionPenalty *float64           `json:"repetition_penalty,omitempty"`
+	MinP              *float64           `json:"min_p,omitempty"`
+	TopA              *float64           `json:"top_a,omitempty"`
+	Seed              *int64             `json:"seed,omitempty"`
+	Stop              []string           `json:"stop,omitempty"`
+	LogitBias         map[string]float64 `json:"logit_bias,omitempty"`
+	Logprobs          bool               `json:"logprobs,omitempty"`
+	TopLogprobs       *int               `json:"top_logprobs,omitempty"`
+	ResponseFormat    json.RawMessage    `json:"response_format,omitempty"`
+	ParallelToolCalls *bool              `json:"parallel_tool_calls,omitempty"`
+	Reasoning         json.RawMessage    `json:"reasoning,omitempty"`
+	ReasoningEffort   string             `json:"reasoning_effort,omitempty"`
 }
 
 // Capabilities is this agent's optional, operator-asserted one-time

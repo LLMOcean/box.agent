@@ -90,7 +90,7 @@ func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
 	}
 
 	if !req.Stream {
-		content, usage, finishReason, toolCalls, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice)
+		content, usage, finishReason, toolCalls, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
 			send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})
 			return
@@ -99,7 +99,7 @@ func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
 		return
 	}
 
-	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice,
+	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
 		func(chunk string) { send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk}) },
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})

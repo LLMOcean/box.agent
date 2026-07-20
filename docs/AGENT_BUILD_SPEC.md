@@ -183,8 +183,15 @@ type Capabilities struct {
 Define these locally in the standalone module — do not depend on
 `router.agent`'s Go module to get them. They are deliberately tiny and
 stable. (This repo defines them in `frame.go`, plus `Tools`/`ToolChoice`/
-`ToolCalls` fields for tool-calling passthrough — an extra on top of the
-minimal spec shown here.)
+`ToolCalls` fields for tool-calling passthrough and a `SamplingParams`
+struct — embedded directly into `Frame` — carrying `temperature`, `top_p`,
+`top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`,
+`min_p`, `top_a`, `seed`, `stop`, `logit_bias`, `logprobs`, `top_logprobs`,
+`response_format`, `parallel_tool_calls`, `reasoning`, and
+`reasoning_effort`, forwarded to the local backend verbatim (see
+`backend.go`'s `openaiChatRequest`, which embeds the same struct) — both
+extras on top of the minimal spec shown here. See router.agent's
+`docs/openrouter/02-sampling-parameters.md` for the full design.)
 
 The router only ever sends `"chat"` frames. The agent only ever sends
 `"hello"` (once, right after connecting), `"chunk"`, `"response"`, `"final"`,
