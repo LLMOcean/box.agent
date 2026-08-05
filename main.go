@@ -52,6 +52,13 @@ func main() {
 	}
 
 	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
+
+	identity, err := api.authenticate()
+	if err != nil {
+		log.Fatalf("provider does not exist for this token: %v", err)
+	}
+	log.Printf("provider found: instance_name=%s", identity.InstanceName)
+
 	if err := api.registerModel(model); err != nil {
 		log.Fatalf("register with API: %v", err)
 	}
