@@ -65,6 +65,24 @@ automatically.
 - On any backend failure, sends back an `"error"` frame rather than hanging
   the request.
 
+## Testing without a real LLM
+
+`cmd/fakellm` is a minimal OpenAI-compatible server for exercising box-agent
+without Ollama/vLLM/etc. running:
+
+```
+go run ./cmd/fakellm -addr :11434
+```
+
+Point `-llm-url http://localhost:11434` at it and box-agent will register a
+fake model and echo back whatever the router sends it, on both the
+streaming and non-streaming paths. To exercise tool-calling, send a chat
+where the last user message is `TOOL:<name>:<json-args>` (e.g.
+`TOOL:get_weather:{"city":"Istanbul"}`) — fakellm responds with a matching
+tool call instead of a text reply. Note this only fakes the LLM backend;
+box-agent's management-API registration (`-api-url`/`-api-token`) still
+needs a real or separately-stubbed endpoint to succeed at boot.
+
 ## Protocol
 
 This implements router.agent's agent protocol — see
