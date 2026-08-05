@@ -65,6 +65,15 @@ func main() {
 	}
 	connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(providerName))
 
+	// The management API's provider is a bare name (e.g. "plusclouds"), not
+	// the router's "provider/model" namespace - strip off anything after the
+	// first "/" in case the operator already passed the combined form to
+	// -provider.
+	apiProviderName := *provider
+	if idx := strings.Index(apiProviderName, "/"); idx != -1 {
+		apiProviderName = apiProviderName[:idx]
+	}
+
 	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
 
 	identity, err := api.authenticate()
@@ -73,10 +82,10 @@ func main() {
 	}
 	log.Printf("provider found: instance_name=%s", identity.InstanceName)
 
-	if err := api.registerModel(model); err != nil {
+	if err := api.registerModel(model, apiProviderName); err != nil {
 		log.Fatalf("register with API: %v", err)
 	}
-	log.Printf("registered with API: model=%s", model)
+	log.Printf("registered with API: model=%s provider=%s", model, apiProviderName)
 
 	caps := &Capabilities{
 		ContextLength:     *contextLength,

@@ -9,9 +9,11 @@ import (
 )
 
 // apiClient registers this box-agent instance with the management API, so
-// it can track which LLM model is currently being served. The instance
-// (and its provider) is identified by the bearer token alone — the API
-// looks it up server-side, so the request body carries only the model.
+// it can track which LLM model is currently being served. The instance is
+// identified by the bearer token alone — the API looks it up server-side.
+// The provider is normally fixed on the instance already, but registerModel
+// can also report it explicitly to move the instance to a different (or
+// not-yet-existing) provider.
 type apiClient struct {
 	baseURL string
 	token   string
@@ -19,7 +21,8 @@ type apiClient struct {
 }
 
 type registerModelRequest struct {
-	Model string `json:"model"`
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // AgentIdentity is the orchestrator's per-token identity for this box-agent
@@ -74,10 +77,13 @@ func (a *apiClient) authenticate() (*AgentIdentity, error) {
 	return &envelope.Data, nil
 }
 
-// registerModel tells the API backend which model this box-agent instance
-// is currently serving.
-func (a *apiClient) registerModel(model string) error {
-	payload, err := json.Marshal(registerModelRequest{Model: model})
+// registerModel tells the API backend which model (and, optionally, which
+// provider) this box-agent instance is currently serving. Passing a
+// non-empty provider lets the API move this instance to that provider,
+// creating it server-side if it doesn't exist yet - see
+// AgentInstancesService::registerModel() in the management API.
+func (a *apiClient) registerModel(model, provider string) error {
+	payload, err := json.Marshal(registerModelRequest{Model: model, Provider: provider})
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
