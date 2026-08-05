@@ -21,7 +21,7 @@ import (
 
 func main() {
 	routerURL := flag.String("router", "ws://localhost:8080", "router base URL (ws:// or wss://)")
-	provider := flag.String("provider", "", "agent provider name (must match an agents: key in the router's config.yaml)")
+	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
 	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN)")
 	llmURL := flag.String("llm-url", "http://localhost:11434", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
@@ -43,13 +43,27 @@ func main() {
 		log.Fatal("-api-token (or API_TOKEN env var) is required")
 	}
 
-	connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(*provider))
 	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{}}
 
 	model, err := backend.runningModel()
 	if err != nil {
 		log.Fatalf("determine running model: %v", err)
 	}
+
+	// The router's provider namespace is "provider/model" (see its
+	// docs/AGENT_PROTOCOL.md and handlers.AgentWSHandler) - fold the
+	// resolved backend model into -provider automatically so a bare
+	// "-provider foo" doesn't register under just "foo" with no model
+	// segment, forcing every downstream lookup (router.agent's
+	// /v1/agents/status, GET /v1/models readiness, /v1/chat routing) to
+	// mismatch against the orchestrator's own "provider/model" catalog
+	// ids. Skip it if the operator already passed the combined form
+	// themselves.
+	providerName := *provider
+	if !strings.Contains(providerName, "/") {
+		providerName = providerName + "/" + model
+	}
+	connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(providerName))
 
 	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
 
