@@ -24,6 +24,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/LLMOcean/box.agent/version"
 )
 
 func main() {
@@ -63,7 +65,15 @@ func runAgent() {
 	outputModalities := flag.String("output-modalities", "text", "comma-separated output modalities this model produces")
 	supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\" (empty = none declared)")
 	connections := flag.Int("connections", 1, "number of parallel WebSocket connections to open to the router, all under the same -provider/-token, all proxying to the same -llm-url - an experiment for isolating whether one connection's write-serialization (see router.agent's Conn.writeMu) is ever a real bottleneck versus the backend's own concurrency ceiling; most deployments should leave this at 1 and instead run separate box-agent processes per independent backend (see README)")
+	showVersion := flag.Bool("version", false, "print the build version and exit - compares a running/downloaded binary against what's actually published (git tags and GitHub Releases are different things; a stale binary silently missing newly-added flags, like this one used to, is usually a release-vs-tag mismatch)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Version)
+		return
+	}
+
+	log.Printf("box-agent version %s", version.Version)
 
 	if *connections < 1 {
 		log.Fatal("-connections must be >= 1")

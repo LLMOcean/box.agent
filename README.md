@@ -65,6 +65,7 @@ self-hosted router/LLM server:
 | `-input-per-million` | — | `0` (unreported) | Input price per million tokens to report at registration. |
 | `-output-per-million` | — | `0` (unreported) | Output price per million tokens to report at registration. |
 | `-connections` | — | `1` | Number of parallel WebSocket connections this one process opens to the router, all proxying to the same `-llm-url`. See below - almost always leave this at `1`. |
+| `-version` | — | `false` | Print the build version and exit. Compares what's actually running against what's published - a git tag alone doesn't mean a matching GitHub Release with binary assets exists; `install.sh` downloads the latter. `dev` means a local `go build` with no `-ldflags` version stamp. |
 
 Run multiple **processes** with the same `-provider`/`-token` (against the
 same or different local LLM servers) for redundancy/load distribution — the

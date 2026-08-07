@@ -184,7 +184,7 @@ else
   else
     git clone --depth 1 --branch "$VERSION" "https://github.com/${REPO}.git" "$src_dir"
   fi
-  ( cd "$src_dir" && GOOS="$goos" GOARCH="$goarch" go build -o "$dest" . )
+  ( cd "$src_dir" && GOOS="$goos" GOARCH="$goarch" go build -ldflags "-X github.com/LLMOcean/box.agent/version.Version=${VERSION}" -o "$dest" . )
   chmod +x "$dest"
 fi
 
