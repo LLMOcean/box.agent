@@ -1,6 +1,6 @@
 package main
 
-import "encoding/json"
+import json "github.com/goccy/go-json"
 
 // Frame is the wire message exchanged with router.agent over the
 // /v1/agents/connect WebSocket connection. One flat shape covers every

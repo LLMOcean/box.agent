@@ -12,9 +12,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
+	json "github.com/goccy/go-json"
 	"log"
 	"net/http"
 	"strings"
