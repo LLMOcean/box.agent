@@ -3,6 +3,9 @@
 > Looking for a step-by-step guide to running box.agent against the
 > platform (getting your token, verifying the connection, troubleshooting)?
 > See [`docs/USAGE.md`](docs/USAGE.md) — written for the control panel.
+>
+> Deploying to a remote GPU box as a long-running service (systemd, Docker,
+> upgrades)? See [`docs/INSTALL.md`](docs/INSTALL.md).
 
 A remote WebSocket agent for [router.agent](https://github.com/LLMOcean/router.agent).
 Run this next to a self-hosted, open-source LLM server (Ollama, vLLM,
@@ -108,7 +111,51 @@ every reply.
 
 ## Deployment
 
-**systemd** — see [`deploy/systemd/box-agent.service`](deploy/systemd/box-agent.service).
+**One-command install** — downloads (or builds, if no release binary is
+published for your OS/arch) the box-agent binary, installs it to survive
+reboots/crashes, and starts it. Replace the `-provider`/`-token`/`-api-*`
+values with your own before running. Full reference (all flags, what each
+script does, manual/Docker alternatives): [`docs/INSTALL.md`](docs/INSTALL.md).
+
+**Linux** (installs a systemd service; run as root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
+  | sudo bash -s -- \
+      -router wss://router.example.com \
+      -provider yourns/your-model \
+      -token "$REGISTRATION_TOKEN" \
+      -api-url https://api.example.com \
+      -api-token "$REGISTRATION_TOKEN" \
+      -llm-url http://localhost:11434
+```
+
+**macOS** (installs a launchd daemon; run as root — same script as Linux,
+OS is auto-detected):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
+  | sudo bash -s -- \
+      -router wss://router.example.com \
+      -provider yourns/your-model \
+      -token "$REGISTRATION_TOKEN" \
+      -api-url https://api.example.com \
+      -api-token "$REGISTRATION_TOKEN" \
+      -llm-url http://localhost:11434
+```
+
+**Windows** (installs a Scheduled Task; run from an elevated PowerShell
+prompt):
+
+```powershell
+iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Router wss://router.example.com -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN -ApiUrl https://api.example.com -ApiToken $env:REGISTRATION_TOKEN -LlmUrl http://localhost:11434"
+```
+
+Only a `linux/amd64` release binary is published today — on macOS or any
+other OS/arch, the scripts fall back to building from source, which needs
+`git` and `go` on `PATH`.
+
+**systemd** (manual) — see [`deploy/systemd/box-agent.service`](deploy/systemd/box-agent.service).
 
 **Docker** — see [`Dockerfile`](Dockerfile); only needed if the local LLM
 server is also containerized on the same host/network.
