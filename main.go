@@ -76,7 +76,18 @@ func runAgent() {
 		apiToken = token
 	}
 
-	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{}}
+	// backendTransport raises MaxIdleConnsPerHost well past Go's default of
+	// 2 - every concurrent chat/stream request this agent handles (see
+	// connection.go's per-request goroutine) opens its own connection to
+	// -llm-url, all to the same host. At the default, anything past the
+	// first 2 concurrent requests gets its connection torn down after use
+	// instead of pooled, paying a fresh TCP handshake next time instead of
+	// reusing one - cheap on localhost, but a real, avoidable cost under
+	// sustained concurrency, and non-trivial if -llm-url is a different host
+	// on the LAN rather than localhost.
+	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
+	backendTransport.MaxIdleConnsPerHost = 128
+	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{Transport: backendTransport}}
 
 	// -backend-model is the model, full stop - box-agent used to fall back
 	// to GET {-llm-url}/v1/models and guess from whatever came back first
