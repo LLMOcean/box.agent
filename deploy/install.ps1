@@ -18,21 +18,26 @@
   like the systemd unit on Linux - is only readable by Administrators on
   this machine.
 
+  -Token and -ApiToken are the same registration token in practice - if
+  -ApiToken (or $env:API_TOKEN) isn't given, it defaults to -Token, so you
+  normally only need to pass one.
+
 .EXAMPLE
-  .\install.ps1 -Router wss://router.example.com -Provider yourns/your-model `
-    -Token $env:REGISTRATION_TOKEN -ApiUrl https://api.example.com `
-    -ApiToken $env:REGISTRATION_TOKEN -LlmUrl http://localhost:11434
+  .\install.ps1 -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN
 #>
 [CmdletBinding()]
 param(
-    [string]$Router = "wss://router.example.com",
+    [string]$Router = "wss://llm.greenference.com",
     [Parameter(Mandatory = $true)][string]$Provider,
     [Parameter(Mandatory = $true)][string]$Token,
-    [string]$ApiUrl = "https://api.example.com",
-    [Parameter(Mandatory = $true)][string]$ApiToken,
-    [string]$LlmUrl = "http://localhost:11434",
+    [string]$ApiUrl = "https://api.greenference.com",
+    [string]$ApiToken = $env:API_TOKEN,
+    [string]$LlmUrl = "https://llm.greenference.com",
     [string]$LlmApiKey,
     [string]$BackendModel,
+    [bool]$IsPublic = $true,
+    [double]$InputPerMillion = 0,
+    [double]$OutputPerMillion = 0,
     [int]$ContextLength = 0,
     [int]$MaxOutputLength = 0,
     [string]$Quantization,
@@ -45,6 +50,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $ApiToken) { $ApiToken = $Token }
 
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -93,8 +100,10 @@ try {
     }
 }
 
-$argList = @("-router", $Router, "-provider", $Provider, "-api-url", $ApiUrl, "-llm-url", $LlmUrl)
+$argList = @("-router", $Router, "-provider", $Provider, "-api-url", $ApiUrl, "-llm-url", $LlmUrl, "-is-public", $IsPublic.ToString())
 if ($BackendModel) { $argList += @("-backend-model", $BackendModel) }
+if ($InputPerMillion -gt 0) { $argList += @("-input-per-million", $InputPerMillion) }
+if ($OutputPerMillion -gt 0) { $argList += @("-output-per-million", $OutputPerMillion) }
 if ($ContextLength -gt 0) { $argList += @("-context-length", $ContextLength) }
 if ($MaxOutputLength -gt 0) { $argList += @("-max-output-length", $MaxOutputLength) }
 if ($Quantization) { $argList += @("-quantization", $Quantization) }

@@ -7,16 +7,14 @@
 # steps this script automates).
 #
 # Usage (flags mirror box-agent's own -flag names; run with -h for all of
-# them):
+# them). -router/-api-url/-llm-url all default to the greenference.com
+# platform already, and -token doubles as -api-token unless that's given
+# separately, so -provider/-token are normally all you need to pass:
 #
 #   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
 #     | sudo bash -s -- \
-#         -router wss://router.example.com \
 #         -provider yourns/your-model \
-#         -token "$REGISTRATION_TOKEN" \
-#         -api-url https://api.example.com \
-#         -api-token "$REGISTRATION_TOKEN" \
-#         -llm-url http://localhost:11434
+#         -token "$REGISTRATION_TOKEN"
 #
 # Every flag can also be set via an identically-named (upper-cased, with
 # "-" -> "_") environment variable instead, e.g. PROVIDER=... TOKEN=...
@@ -34,19 +32,23 @@ REPO="LLMOcean/box.agent"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: install.sh -provider NAME -token TOK -api-token TOK [options]
+Usage: install.sh -provider NAME -token TOK [options]
 
 Required:
   -provider NAME           provider name, e.g. yourns/your-model
-  -token TOKEN              registration token (or TOKEN/AGENT_TOKEN env var)
-  -api-token TOKEN          registration token (or API_TOKEN env var)
+  -token TOKEN              registration token (or TOKEN/AGENT_TOKEN env var);
+                            also used as -api-token unless that's set separately
 
 box-agent flags (see docs/USAGE.md for details):
-  -router URL               default: wss://router.example.com
-  -api-url URL               default: https://api.example.com
-  -llm-url URL               default: http://localhost:11434
+  -router URL               default: wss://llm.greenference.com
+  -api-url URL               default: https://api.greenference.com
+  -api-token TOKEN           default: same as -token (or API_TOKEN env var)
+  -llm-url URL               default: https://llm.greenference.com
   -llm-api-key KEY
   -backend-model NAME
+  -is-public BOOL            default: true
+  -input-per-million N       default: 0 (unreported)
+  -output-per-million N      default: 0 (unreported)
   -context-length N
   -max-output-length N
   -quantization NAME
@@ -61,14 +63,17 @@ Installer-only flags:
 EOF
 }
 
-ROUTER="${ROUTER:-wss://router.example.com}"
+ROUTER="${ROUTER:-wss://llm.greenference.com}"
 PROVIDER="${PROVIDER:-}"
 TOKEN="${TOKEN:-${AGENT_TOKEN:-}}"
-API_URL="${API_URL:-https://api.example.com}"
+API_URL="${API_URL:-https://api.greenference.com}"
 API_TOKEN="${API_TOKEN:-}"
-LLM_URL="${LLM_URL:-http://localhost:11434}"
+LLM_URL="${LLM_URL:-https://llm.greenference.com}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 BACKEND_MODEL="${BACKEND_MODEL:-}"
+IS_PUBLIC="${IS_PUBLIC:-}"
+INPUT_PER_MILLION="${INPUT_PER_MILLION:-}"
+OUTPUT_PER_MILLION="${OUTPUT_PER_MILLION:-}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-}"
 MAX_OUTPUT_LENGTH="${MAX_OUTPUT_LENGTH:-}"
 QUANTIZATION="${QUANTIZATION:-}"
@@ -97,6 +102,12 @@ while [ $# -gt 0 ]; do
     -llm-api-key=*) LLM_API_KEY="${1#*=}"; shift ;;
     -backend-model) BACKEND_MODEL="$2"; shift 2 ;;
     -backend-model=*) BACKEND_MODEL="${1#*=}"; shift ;;
+    -is-public) IS_PUBLIC="$2"; shift 2 ;;
+    -is-public=*) IS_PUBLIC="${1#*=}"; shift ;;
+    -input-per-million) INPUT_PER_MILLION="$2"; shift 2 ;;
+    -input-per-million=*) INPUT_PER_MILLION="${1#*=}"; shift ;;
+    -output-per-million) OUTPUT_PER_MILLION="$2"; shift 2 ;;
+    -output-per-million=*) OUTPUT_PER_MILLION="${1#*=}"; shift ;;
     -context-length) CONTEXT_LENGTH="$2"; shift 2 ;;
     -context-length=*) CONTEXT_LENGTH="${1#*=}"; shift ;;
     -max-output-length) MAX_OUTPUT_LENGTH="$2"; shift 2 ;;
@@ -124,11 +135,15 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "error: must be run as root (try: sudo $0 ...)" >&2
   exit 1
 fi
-if [ -z "$PROVIDER" ] || [ -z "$TOKEN" ] || [ -z "$API_TOKEN" ]; then
-  echo "error: -provider, -token, and -api-token are all required" >&2
+if [ -z "$PROVIDER" ] || [ -z "$TOKEN" ]; then
+  echo "error: -provider and -token are required" >&2
   usage
   exit 1
 fi
+# -token and -api-token are the same registration token in practice - fall
+# back so only one has to be passed, while still letting -api-token/
+# API_TOKEN override it if they ever diverge.
+[ -z "$API_TOKEN" ] && API_TOKEN="$TOKEN"
 
 uname_s="$(uname -s)"
 uname_m="$(uname -m)"
@@ -172,6 +187,9 @@ fi
 
 EXTRA_ARGS=()
 [ -n "$BACKEND_MODEL" ] && EXTRA_ARGS+=("-backend-model" "$BACKEND_MODEL")
+[ -n "$IS_PUBLIC" ] && EXTRA_ARGS+=("-is-public" "$IS_PUBLIC")
+[ -n "$INPUT_PER_MILLION" ] && EXTRA_ARGS+=("-input-per-million" "$INPUT_PER_MILLION")
+[ -n "$OUTPUT_PER_MILLION" ] && EXTRA_ARGS+=("-output-per-million" "$OUTPUT_PER_MILLION")
 [ -n "$CONTEXT_LENGTH" ] && EXTRA_ARGS+=("-context-length" "$CONTEXT_LENGTH")
 [ -n "$MAX_OUTPUT_LENGTH" ] && EXTRA_ARGS+=("-max-output-length" "$MAX_OUTPUT_LENGTH")
 [ -n "$QUANTIZATION" ] && EXTRA_ARGS+=("-quantization" "$QUANTIZATION")

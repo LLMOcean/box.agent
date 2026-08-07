@@ -16,8 +16,9 @@ Router  <--WebSocket tunnel--  box-agent  --HTTP-->  local LLM server
 
 ## 1. Prerequisites
 
-- A Linux, macOS, or Windows host (only a `linux/amd64` release binary is
-  published today — on any other OS/arch the install scripts fall back to
+- A Linux, macOS, or Windows host (release binaries are published for
+  `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and
+  `windows/amd64` — on any other OS/arch the install scripts fall back to
   building from source, which needs `git` and `go` on `PATH`; see
   [§8](#8-other-platforms)).
 - A local OpenAI-compatible LLM server already running and reachable from
@@ -39,17 +40,18 @@ survives reboots/crashes, and start it. Skip straight to
 describe what they automate, in case you want to do it by hand or
 customize it.
 
+`-router`, `-api-url`, and `-llm-url` all default to the platform already
+(`llm.greenference.com`/`api.greenference.com`), and `-token` doubles as
+`-api-token` unless given separately — so `-provider`/`-token` are normally
+the only flags either script needs.
+
 **Linux** (installs a systemd service; run as root):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
-      -router wss://router.example.com \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN" \
-      -api-url https://api.example.com \
-      -api-token "$REGISTRATION_TOKEN" \
-      -llm-url http://localhost:11434
+      -token "$REGISTRATION_TOKEN"
 ```
 
 **macOS** (installs a launchd daemon; run as root — it's the same script
@@ -58,20 +60,20 @@ as Linux, the OS is auto-detected):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
-      -router wss://router.example.com \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN" \
-      -api-url https://api.example.com \
-      -api-token "$REGISTRATION_TOKEN" \
-      -llm-url http://localhost:11434
+      -token "$REGISTRATION_TOKEN"
 ```
 
 **Windows** (installs a Scheduled Task running as SYSTEM; run from an
 elevated PowerShell prompt):
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Router wss://router.example.com -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN -ApiUrl https://api.example.com -ApiToken $env:REGISTRATION_TOKEN -LlmUrl http://localhost:11434"
+iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN"
 ```
+
+Pass `-router`/`-llm-url` (Linux/macOS) or `-Router`/`-LlmUrl` (Windows) to
+point at a self-hosted router or local LLM server instead — see
+[§4](#4-run-it-as-a-systemd-service) for a fully-explicit example.
 
 `install.ps1` tries a Windows release asset first and, since none is
 published today, falls back to building from source — which needs `git`
@@ -328,13 +330,14 @@ release rather than always tracking `latest` — see
 
 ## 8. Other platforms
 
-Only a `linux/amd64` release binary is published today.
-[`deploy/install.sh`](../deploy/install.sh) (macOS, non-amd64 Linux) and
-[`deploy/install.ps1`](../deploy/install.ps1) (Windows) both handle this
-automatically by falling back to a source build (see
-[§2](#2-quick-install-recommended)). For any other OS/arch, build from
-source by hand instead — it's a single static Go binary with one
-dependency ([`gorilla/websocket`](https://github.com/gorilla/websocket)):
+Release binaries are published for `linux/amd64`, `linux/arm64`,
+`darwin/amd64`, `darwin/arm64`, and `windows/amd64`. For anything else,
+[`deploy/install.sh`](../deploy/install.sh) and
+[`deploy/install.ps1`](../deploy/install.ps1) both handle it automatically
+by falling back to a source build (see
+[§2](#2-quick-install-recommended)). Or build from source by hand
+yourself — it's a single static Go binary with one dependency
+([`gorilla/websocket`](https://github.com/gorilla/websocket)):
 
 ```bash
 git clone https://github.com/LLMOcean/box.agent.git
