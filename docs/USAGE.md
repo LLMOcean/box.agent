@@ -33,13 +33,13 @@ the latest release binary and execs it with whatever flags you pass it:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh | bash -s -- \
-  -router ws://chat.llmocean.com:8080 \
   -provider plusclouds/qwen5.0-with-extras \
-  -token "$REGISTRATION_TOKEN" \
-  -api-url https://api.plusclouds.com \
-  -api-token "$REGISTRATION_TOKEN" \
-  -llm-url http://localhost:11434
+  -token "$REGISTRATION_TOKEN"
 ```
+
+(`-router`/`-llm-url`/`-api-url` default to the platform already and
+`-token` doubles as `-api-token` — pass any of them explicitly to override,
+same as any other box-agent flag.)
 
 Set `VERSION=v1.1.2` (env var) to pin a specific release instead of
 `latest`.
@@ -58,11 +58,20 @@ go build -o box-agent .
 
 ```
 ./box-agent \
-  -router ws://chat.llmocean.com:8080 \
+  -provider plusclouds/qwen5.0-with-extras \
+  -token "$REGISTRATION_TOKEN"
+```
+
+`-router`, `-llm-url`, and `-api-url` all default to the platform already
+(`llm.greenference.com`/`api.greenference.com`), and `-token` doubles as
+`-api-token` — so `-provider`/`-token` are normally all you need. Pass any
+of the others explicitly to override (e.g. pointing `-llm-url` at a local
+Ollama/vLLM server instead of the default):
+
+```
+./box-agent \
   -provider plusclouds/qwen5.0-with-extras \
   -token "$REGISTRATION_TOKEN" \
-  -api-url https://api.plusclouds.com \
-  -api-token "$REGISTRATION_TOKEN" \
   -llm-url http://localhost:11434
 ```
 
@@ -86,14 +95,17 @@ connected: ws://chat.llmocean.com:8080/v1/agents/connect?provider=plusclouds%2Fq
 
 | Flag | Env fallback | Default | Meaning |
 |---|---|---|---|
-| `-router` | — | `ws://localhost:8080` | Router WebSocket URL. |
+| `-router` | — | `wss://llm.greenference.com` | Router WebSocket URL. |
 | `-provider` | — | *(required)* | Your provider name, e.g. `plusclouds/qwen5.0-with-extras`. |
-| `-token` | `AGENT_TOKEN` | *(required)* | Your registration token, used to authenticate the router connection. |
-| `-llm-url` | — | `http://localhost:11434` | Base URL of your local OpenAI-compatible LLM server. |
+| `-token` | `AGENT_TOKEN` | *(required)* | Your registration token, used to authenticate the router connection. Also used as `-api-token` unless that's set separately — normally the only token you need to pass. |
+| `-llm-url` | — | `https://llm.greenference.com` | Base URL of your local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for your local LLM server, if it requires one. |
 | `-backend-model` | — | *(empty — auto-detect)* | Override the model id sent to your LLM server, if it differs from what you registered (e.g. vLLM needs the full repo id it was started with, like `tcclaviger/Qwen3.6-40B-...`). |
-| `-api-url` | — | `http://localhost:8000` | Management API base URL. Use `https://api.plusclouds.com` in production. |
-| `-api-token` | `API_TOKEN` | *(required)* | Your registration token, used to authenticate with the management API. |
+| `-api-url` | — | `https://api.greenference.com` | Management API base URL. |
+| `-api-token` | `API_TOKEN` | *(defaults to `-token`)* | Your registration token, used to authenticate with the management API, if it needs to differ from `-token`. |
+| `-is-public` | — | `true` | Whether this model/provider should be publicly listed. |
+| `-input-per-million` | — | `0` (unreported) | Input price per million tokens to report at registration. |
+| `-output-per-million` | — | `0` (unreported) | Output price per million tokens to report at registration. |
 
 ## 5. Verify you're connected
 

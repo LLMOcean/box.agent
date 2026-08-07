@@ -45,14 +45,14 @@ func main() {
 }
 
 func runAgent() {
-	routerURL := flag.String("router", "ws://localhost:8080", "router base URL (ws:// or wss://)")
+	routerURL := flag.String("router", "wss://llm.greenference.com", "router base URL (ws:// or wss://)")
 	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
-	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN)")
-	llmURL := flag.String("llm-url", "http://localhost:11434", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
+	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN) - also used as -api-token unless that's set separately")
+	llmURL := flag.String("llm-url", "https://llm.greenference.com", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "override the model name sent to the local LLM backend (use when the backend's own model id differs from the router's registered model name, e.g. vLLM expects the full repo id it was started with)")
-	apiURL := flag.String("api-url", "http://localhost:8000", "base URL of the management API used to register this box-agent and sync its running model")
-	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN)")
+	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
+	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set")
 	isPublic := flag.Bool("is-public", true, "whether this model/provider should be publicly listed (sent as is_public on registration)")
 	inputPerMillion := flag.Float64("input-per-million", 0, "input price per million tokens to report at registration (0 = unreported)")
 	outputPerMillion := flag.Float64("output-per-million", 0, "output price per million tokens to report at registration (0 = unreported)")
@@ -67,8 +67,13 @@ func runAgent() {
 	if *provider == "" || *token == "" {
 		log.Fatal("both -provider and -token (or AGENT_TOKEN env var) are required")
 	}
+	// -token and -api-token are the same value in practice (one
+	// registration token authenticates both the router connection and the
+	// management API) - fall back to -token so operators only pass one,
+	// while still letting -api-token/API_TOKEN override it if they ever
+	// diverge.
 	if *apiToken == "" {
-		log.Fatal("-api-token (or API_TOKEN env var) is required")
+		apiToken = token
 	}
 
 	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{}}
