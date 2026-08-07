@@ -1,19 +1,42 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+// agentDialer dials the router the same way websocket.DefaultDialer does,
+// except it disables Nagle's algorithm (TCP_NODELAY) on the raw TCP
+// connection before the (optional) TLS handshake wraps it. Every chat/chunk
+// frame on this connection is a small, latency-sensitive, request/response-
+// shaped write; left on its OS default, Nagle's algorithm can hold each one
+// back tens of milliseconds waiting to coalesce with more data that never
+// comes, directly inflating TTFT.
+var agentDialer = websocket.Dialer{
+	NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			tcp.SetNoDelay(true)
+		}
+		return conn, nil
+	},
+}
+
 // connectAndServe dials the router and serves chat requests until the
 // connection drops, at which point it returns so the caller can reconnect.
 func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities) error {
-	conn, _, err := websocket.DefaultDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
+	conn, _, err := agentDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", connectURL, err)
 	}
@@ -61,15 +84,22 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 			log.Printf("bad frame: %v", err)
 			continue
 		}
+		// recvAt marks when this frame came off the wire, before dispatch -
+		// the baseline handleChat measures backend-only TTFT against, so it
+		// can be compared to the router's own ttft_ms (see
+		// router.agent/handlers/proxy.go's serveStream) for the same
+		// request_id to see how much of TTFT is the network hop vs the
+		// backend itself.
+		recvAt := time.Now()
 		switch f.Type {
 		case "chat":
 			// Multiple requests can be in flight on one connection at once —
 			// handle each independently so a slow request doesn't block others.
 			wg.Add(1)
-			go func(req Frame) {
+			go func(req Frame, recvAt time.Time) {
 				defer wg.Done()
-				handleChat(req, backend, send)
-			}(f)
+				handleChat(req, recvAt, backend, send)
+			}(f, recvAt)
 		case "benchmark":
 			wg.Add(1)
 			go func(req Frame) {
@@ -85,7 +115,7 @@ func handleBenchmark(req Frame, backend *llmBackend, send func(Frame) error) {
 	send(Frame{Type: "benchmark_result", RequestID: req.RequestID, Benchmark: &result})
 }
 
-func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
+func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Frame) error) {
 	msgs := make([]openaiMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
 		msgs = append(msgs, openaiMessage{Role: "system", Content: req.System})
@@ -105,12 +135,19 @@ func handleChat(req Frame, backend *llmBackend, send func(Frame) error) {
 			send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})
 			return
 		}
+		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
 		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		return
 	}
 
+	var ttftOnce sync.Once
 	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
-		func(chunk string) { send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk}) },
+		func(chunk string) {
+			ttftOnce.Do(func() {
+				debugLog("[agent] request_id=%s backend_ttft_ms=%d", req.RequestID, time.Since(recvAt).Milliseconds())
+			})
+			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk})
+		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		})
