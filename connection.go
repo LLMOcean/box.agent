@@ -79,6 +79,7 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 			return fmt.Errorf("read: %w", err)
 		}
 
+		decodeStart := time.Now()
 		var f Frame
 		if err := json.Unmarshal(data, &f); err != nil {
 			log.Printf("bad frame: %v", err)
@@ -91,6 +92,13 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 		// request_id to see how much of TTFT is the network hop vs the
 		// backend itself.
 		recvAt := time.Now()
+		if f.Type == "chat" {
+			// One decode per incoming request (the router only ever sends
+			// "chat" frames here, per docs/AGENT_PROTOCOL.md §7) - safe to
+			// log unconditionally under DEBUG without spam, unlike the
+			// per-chunk sends this agent emits back.
+			debugLog("[agent] request_id=%s frame_decode_us=%d payload_bytes=%d", f.RequestID, recvAt.Sub(decodeStart).Microseconds(), len(data))
+		}
 		switch f.Type {
 		case "chat":
 			// Multiple requests can be in flight on one connection at once —
@@ -140,12 +148,23 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 		return
 	}
 
-	var ttftOnce sync.Once
+	firstChunk := true // backend.stream calls onChunk synchronously from one goroutine - no lock needed
 	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
 		func(chunk string) {
-			ttftOnce.Do(func() {
-				debugLog("[agent] request_id=%s backend_ttft_ms=%d", req.RequestID, time.Since(recvAt).Milliseconds())
-			})
+			if firstChunk {
+				firstChunk = false
+				backendTTFT := time.Since(recvAt)
+				// Times just this first chunk's Frame marshal + WebSocket
+				// write - the one JSON-codec cost on this agent's side that
+				// could plausibly land inside TTFT (every later chunk this
+				// stream sends only affects total throughput, not TTFT, so
+				// isn't worth timing/logging per-chunk).
+				sendStart := time.Now()
+				send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk})
+				debugLog("[agent] request_id=%s backend_ttft_ms=%d first_chunk_marshal_send_us=%d",
+					req.RequestID, backendTTFT.Milliseconds(), time.Since(sendStart).Microseconds())
+				return
+			}
 			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk})
 		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
