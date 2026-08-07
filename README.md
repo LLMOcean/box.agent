@@ -64,11 +64,23 @@ self-hosted router/LLM server:
 | `-is-public` | — | `true` | Whether this model/provider should be publicly listed (sent as `is_public` on registration). |
 | `-input-per-million` | — | `0` (unreported) | Input price per million tokens to report at registration. |
 | `-output-per-million` | — | `0` (unreported) | Output price per million tokens to report at registration. |
+| `-connections` | — | `1` | Number of parallel WebSocket connections this one process opens to the router, all proxying to the same `-llm-url`. See below - almost always leave this at `1`. |
 
-Run multiple instances with the same `-provider`/`-token` (against the same
-or different local LLM servers) for redundancy/load distribution — the
+Run multiple **processes** with the same `-provider`/`-token` (against the
+same or different local LLM servers) for redundancy/load distribution — the
 router pools and round-robins all connections under one provider name
-automatically.
+automatically. This is the normal way to add capacity, and the only way that
+adds real capacity when each process points at an independent backend (its
+own GPU/vLLM instance).
+
+`-connections` is a different, narrower thing: it opens N connections from
+**one process to the same backend**, an experiment for isolating whether a
+single connection's write-serialization ever becomes a measurable bottleneck
+under very high concurrent chunk-emission, independent of backend compute.
+Unlike running separate processes against independent backends, this does
+**not** add real inference capacity — the same backend is still doing the
+same work either way. Leave it at the default of `1` unless you're
+specifically testing that hypothesis.
 
 ## Installing a model
 

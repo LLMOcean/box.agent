@@ -62,7 +62,12 @@ func runAgent() {
 	inputModalities := flag.String("input-modalities", "text", "comma-separated input modalities this model accepts")
 	outputModalities := flag.String("output-modalities", "text", "comma-separated output modalities this model produces")
 	supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\" (empty = none declared)")
+	connections := flag.Int("connections", 1, "number of parallel WebSocket connections to open to the router, all under the same -provider/-token, all proxying to the same -llm-url - an experiment for isolating whether one connection's write-serialization (see router.agent's Conn.writeMu) is ever a real bottleneck versus the backend's own concurrency ceiling; most deployments should leave this at 1 and instead run separate box-agent processes per independent backend (see README)")
 	flag.Parse()
+
+	if *connections < 1 {
+		log.Fatal("-connections must be >= 1")
+	}
 
 	if *provider == "" || *token == "" || *backendModel == "" {
 		log.Fatal("-provider, -token (or AGENT_TOKEN env var), and -backend-model are all required - box-agent does not guess these")
@@ -141,12 +146,22 @@ func runAgent() {
 		SupportedFeatures: splitCSV(*supportedFeatures),
 	}
 
-	for {
-		if err := connectAndServe(connectURL, *token, backend, caps); err != nil {
-			log.Printf("connection error: %v — reconnecting in 5s", err)
+	runConnLoop := func(connIdx int) {
+		for {
+			if err := connectAndServe(connectURL, *token, backend, caps); err != nil {
+				log.Printf("connection %d/%d error: %v — reconnecting in 5s", connIdx, *connections, err)
+			}
+			time.Sleep(5 * time.Second)
 		}
-		time.Sleep(5 * time.Second)
 	}
+
+	// Connections 2..N run in their own goroutine; connection 1 runs in this
+	// one, so a single-connection run (the default and common case) behaves
+	// exactly as before - main() blocks here forever either way.
+	for i := 2; i <= *connections; i++ {
+		go runConnLoop(i)
+	}
+	runConnLoop(1)
 }
 
 // splitCSV splits a comma-separated flag value into a trimmed slice, or nil
