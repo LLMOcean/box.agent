@@ -250,7 +250,12 @@ elif [ "$goos" = "darwin" ]; then
   }
 
   PROGRAM_ARGS=("$dest" "-router" "$ROUTER" "-provider" "$PROVIDER" "-api-url" "$API_URL" "-llm-url" "$LLM_URL")
-  PROGRAM_ARGS+=("${EXTRA_ARGS[@]}")
+  # macOS's default /bin/bash is 3.2 (pre-4.4), where "${arr[@]}" on a
+  # zero-element array trips "unbound variable" under set -u - guard the
+  # count first rather than expanding directly.
+  if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+    PROGRAM_ARGS+=("${EXTRA_ARGS[@]}")
+  fi
 
   echo "Writing ${PLIST_PATH}" >&2
   {
