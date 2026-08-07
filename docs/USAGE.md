@@ -24,6 +24,9 @@ Router  <--WebSocket tunnel--  box-agent  --HTTP-->  your local LLM server
   (`<namespace>/<model-name>` — the part after the `/` is what users will
   request as the model; a bare name with no `/` uses itself as the model
   too).
+- The exact **model name** your LLM server is serving, to pass as
+  `-backend-model`. box-agent doesn't detect this for you — see
+  [§3](#3-run-it).
 
 ## 2. Get the binary
 
@@ -34,12 +37,14 @@ the latest release binary and execs it with whatever flags you pass it:
 ```
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh | bash -s -- \
   -provider plusclouds/qwen5.0-with-extras \
-  -token "$REGISTRATION_TOKEN"
+  -token "$REGISTRATION_TOKEN" \
+  -backend-model "qwen5.0-with-extras"
 ```
 
 (`-router`/`-llm-url`/`-api-url` default to the platform already and
 `-token` doubles as `-api-token` — pass any of them explicitly to override,
-same as any other box-agent flag.)
+same as any other box-agent flag. `-provider`/`-token`/`-backend-model` are
+the three that are always required, though.)
 
 Set `VERSION=v1.1.2` (env var) to pin a specific release instead of
 `latest`.
@@ -59,30 +64,37 @@ go build -o box-agent .
 ```
 ./box-agent \
   -provider plusclouds/qwen5.0-with-extras \
-  -token "$REGISTRATION_TOKEN"
+  -token "$REGISTRATION_TOKEN" \
+  -backend-model "qwen5.0-with-extras"
 ```
 
-`-router`, `-llm-url`, and `-api-url` all default to the platform already
-(`llm.greenference.com`/`api.greenference.com`), and `-token` doubles as
-`-api-token` — so `-provider`/`-token` are normally all you need. Pass any
-of the others explicitly to override (e.g. pointing `-llm-url` at a local
-Ollama/vLLM server instead of the default):
+`-provider`, `-token`, and `-backend-model` are always required — box-agent
+never guesses the provider or model name for you (an earlier version tried
+auto-detecting the model via `GET {-llm-url}/v1/models`, but that silently
+registered whatever came back first, which broke badly if `-llm-url`
+wasn't a genuine single-model backend; it now requires `-backend-model`
+explicitly instead). `-router`, `-llm-url`, and `-api-url` default to the
+platform already (`llm.greenference.com`/`api.greenference.com`), and
+`-token` doubles as `-api-token`. Pass any of those explicitly to override
+(e.g. pointing `-llm-url` at a local Ollama/vLLM server instead of the
+default):
 
 ```
 ./box-agent \
   -provider plusclouds/qwen5.0-with-extras \
   -token "$REGISTRATION_TOKEN" \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -backend-model "qwen5.0-with-extras"
 ```
 
 On startup it will:
 
-1. Ask your local LLM server (`-llm-url`) which model it's serving — via
-   `GET /v1/models` — unless you override this with `-backend-model`.
-2. Register that model with the management API (`-api-url`/`-api-token`).
-   **This step is required** — the agent exits if it fails.
-3. Connect to the router (`-router`) under your provider name and start
-   serving chat requests.
+1. Register `-backend-model` with the management API
+   (`-api-url`/`-api-token`). **This step is required** — the agent exits
+   if it fails.
+2. Connect to the router (`-router`) under your provider name and start
+   serving chat requests, forwarding each one to `-llm-url` with
+   `-backend-model` as the model name.
 
 A successful run logs:
 
@@ -100,7 +112,7 @@ connected: ws://chat.llmocean.com:8080/v1/agents/connect?provider=plusclouds%2Fq
 | `-token` | `AGENT_TOKEN` | *(required)* | Your registration token, used to authenticate the router connection. Also used as `-api-token` unless that's set separately — normally the only token you need to pass. |
 | `-llm-url` | — | `https://llm.greenference.com` | Base URL of your local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for your local LLM server, if it requires one. |
-| `-backend-model` | — | *(empty — auto-detect)* | Override the model id sent to your LLM server, if it differs from what you registered (e.g. vLLM needs the full repo id it was started with, like `tcclaviger/Qwen3.6-40B-...`). |
+| `-backend-model` | — | *(required)* | The model name — registered with the management API and sent to your LLM server. E.g. vLLM needs the full repo id it was started with, like `tcclaviger/Qwen3.6-40B-...`, not just what you registered as the model. |
 | `-api-url` | — | `https://api.greenference.com` | Management API base URL. |
 | `-api-token` | `API_TOKEN` | *(defaults to `-token`)* | Your registration token, used to authenticate with the management API, if it needs to differ from `-token`. |
 | `-is-public` | — | `true` | Whether this model/provider should be publicly listed. |
@@ -127,8 +139,8 @@ connected — check its logs.
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| `determine running model: ... connection refused` | box-agent can't reach `-llm-url`. | Make sure your local LLM server is running and reachable at that address before starting box-agent. |
-| `register with API: ... 422 ... "The model field is required."` | The model name resolved to empty. | Make sure your LLM server's `/v1/models` returns at least one model, or set `-backend-model` explicitly. |
+| `-provider, -token (or AGENT_TOKEN env var), and -backend-model are all required` | One of the three was left unset. | Pass all three explicitly — box-agent won't guess or detect any of them. |
+| `register with API: ... 422 ...` | The management API rejected the registration payload. | Double check `-backend-model` is a value the API accepts (not empty, not malformed). |
 | `connection error: ... websocket: bad handshake` (with a `401` on the underlying request) | Router rejected your `-token`. | Double check the registration token is current and hasn't been revoked/rotated. |
 | `connection error: ... websocket: bad handshake` (with a `503` on the underlying request) | The router's own auth backend is temporarily unavailable. | Transient — box-agent retries every 5s automatically; no action needed unless it persists. |
 | Agent shows connected, but chat requests never arrive | Client is likely using the wrong token or model string. | Client requests go to `POST /v1/chat` with a separate end-user token (not the agent registration token), and `"model"` must match your provider name (e.g. `"plusclouds/qwen5.0-with-extras"`). |

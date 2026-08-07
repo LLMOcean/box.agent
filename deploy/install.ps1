@@ -22,8 +22,13 @@
   -ApiToken (or $env:API_TOKEN) isn't given, it defaults to -Token, so you
   normally only need to pass one.
 
+  -Provider, -Token, and -BackendModel are always required - box-agent does
+  not guess the provider or model name (an earlier version auto-detected
+  the model via the LLM server's /v1/models endpoint, which silently
+  registered garbage whenever that wasn't a genuine single-model backend).
+
 .EXAMPLE
-  .\install.ps1 -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN
+  .\install.ps1 -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN -BackendModel "your-model-id"
 #>
 [CmdletBinding()]
 param(
@@ -34,7 +39,7 @@ param(
     [string]$ApiToken = $env:API_TOKEN,
     [string]$LlmUrl = "https://llm.greenference.com",
     [string]$LlmApiKey,
-    [string]$BackendModel,
+    [Parameter(Mandatory = $true)][string]$BackendModel,
     [bool]$IsPublic = $true,
     [double]$InputPerMillion = 0,
     [double]$OutputPerMillion = 0,
@@ -100,8 +105,7 @@ try {
     }
 }
 
-$argList = @("-router", $Router, "-provider", $Provider, "-api-url", $ApiUrl, "-llm-url", $LlmUrl, "-is-public", $IsPublic.ToString())
-if ($BackendModel) { $argList += @("-backend-model", $BackendModel) }
+$argList = @("-router", $Router, "-provider", $Provider, "-api-url", $ApiUrl, "-llm-url", $LlmUrl, "-is-public", $IsPublic.ToString(), "-backend-model", $BackendModel)
 if ($InputPerMillion -gt 0) { $argList += @("-input-per-million", $InputPerMillion) }
 if ($OutputPerMillion -gt 0) { $argList += @("-output-per-million", $OutputPerMillion) }
 if ($ContextLength -gt 0) { $argList += @("-context-length", $ContextLength) }

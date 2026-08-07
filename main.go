@@ -50,7 +50,7 @@ func runAgent() {
 	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN) - also used as -api-token unless that's set separately")
 	llmURL := flag.String("llm-url", "https://llm.greenference.com", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
-	backendModel := flag.String("backend-model", "", "override the model name sent to the local LLM backend (use when the backend's own model id differs from the router's registered model name, e.g. vLLM expects the full repo id it was started with)")
+	backendModel := flag.String("backend-model", "", "model name to register and to send to the local LLM backend (required) - e.g. vLLM expects the full repo id it was started with, like \"tcclaviger/Qwen3.6-40B-...\"")
 	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set")
 	isPublic := flag.Bool("is-public", true, "whether this model/provider should be publicly listed (sent as is_public on registration)")
@@ -64,8 +64,8 @@ func runAgent() {
 	supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\" (empty = none declared)")
 	flag.Parse()
 
-	if *provider == "" || *token == "" {
-		log.Fatal("both -provider and -token (or AGENT_TOKEN env var) are required")
+	if *provider == "" || *token == "" || *backendModel == "" {
+		log.Fatal("-provider, -token (or AGENT_TOKEN env var), and -backend-model are all required - box-agent does not guess these")
 	}
 	// -token and -api-token are the same value in practice (one
 	// registration token authenticates both the router connection and the
@@ -78,20 +78,21 @@ func runAgent() {
 
 	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{}}
 
-	model, err := backend.runningModel()
-	if err != nil {
-		log.Fatalf("determine running model: %v", err)
-	}
+	// -backend-model is the model, full stop - box-agent used to fall back
+	// to GET {-llm-url}/v1/models and guess from whatever came back first
+	// when this was unset, which silently registered garbage if -llm-url
+	// pointed at anything other than a genuine single-model backend (e.g.
+	// a multi-model catalog/router). Require it explicitly instead.
+	model := *backendModel
 
 	// The router's provider namespace is "provider/model" (see its
 	// docs/AGENT_PROTOCOL.md and handlers.AgentWSHandler) - fold the
-	// resolved backend model into -provider automatically so a bare
-	// "-provider foo" doesn't register under just "foo" with no model
-	// segment, forcing every downstream lookup (router.agent's
-	// /v1/agents/status, GET /v1/models readiness, /v1/chat routing) to
-	// mismatch against the orchestrator's own "provider/model" catalog
-	// ids. Skip it if the operator already passed the combined form
-	// themselves.
+	// model into -provider automatically so a bare "-provider foo" doesn't
+	// register under just "foo" with no model segment, forcing every
+	// downstream lookup (router.agent's /v1/agents/status, GET /v1/models
+	// readiness, /v1/chat routing) to mismatch against the orchestrator's
+	// own "provider/model" catalog ids. Skip it if the operator already
+	// passed the combined form themselves.
 	providerName := *provider
 	if !strings.Contains(providerName, "/") {
 		providerName = providerName + "/" + model

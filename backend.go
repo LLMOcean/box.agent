@@ -131,50 +131,6 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 	return content, usage, finishReason, toolCalls, nil
 }
 
-// runningModel returns the model id currently served by the local LLM
-// backend: the configured override if set, otherwise whatever the
-// backend's own /v1/models endpoint reports as loaded.
-func (b *llmBackend) runningModel() (string, error) {
-	if b.modelOverride != "" {
-		return b.modelOverride, nil
-	}
-
-	req, err := http.NewRequest(http.MethodGet, b.baseURL+"/v1/models", nil)
-	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
-	}
-	if b.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+b.apiKey)
-	}
-
-	resp, err := b.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm backend error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var lr struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &lr); err != nil {
-		return "", fmt.Errorf("unmarshal response: %w", err)
-	}
-	if len(lr.Data) == 0 {
-		return "", fmt.Errorf("no models reported at %s/v1/models", b.baseURL)
-	}
-	return lr.Data[0].ID, nil
-}
-
 // stream performs a streaming completion, calling onChunk for every
 // incremental delta and onFinal exactly once when the stream ends. Tool
 // calls are accumulated across the stream (vLLM, like OpenAI, streams them

@@ -40,10 +40,14 @@ survives reboots/crashes, and start it. Skip straight to
 describe what they automate, in case you want to do it by hand or
 customize it.
 
-`-router`, `-api-url`, and `-llm-url` all default to the platform already
-(`llm.greenference.com`/`api.greenference.com`), and `-token` doubles as
-`-api-token` unless given separately — so `-provider`/`-token` are normally
-the only flags either script needs.
+`-provider`, `-token`, and `-backend-model` are always required — box-agent
+never guesses the provider or model name (see
+[§9](#9-verifying-and-troubleshooting) if you're wondering why: it used to
+auto-detect the model via `GET {-llm-url}/v1/models`, which silently
+registered garbage whenever `-llm-url` wasn't a genuine single-model
+backend). `-router`, `-api-url`, and `-llm-url` default to the platform
+already (`llm.greenference.com`/`api.greenference.com`), and `-token`
+doubles as `-api-token` unless given separately.
 
 **Linux** (installs a systemd service; run as root):
 
@@ -51,7 +55,8 @@ the only flags either script needs.
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN"
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "your-model-id"
 ```
 
 **macOS** (installs a launchd daemon; run as root — it's the same script
@@ -61,14 +66,15 @@ as Linux, the OS is auto-detected):
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN"
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "your-model-id"
 ```
 
 **Windows** (installs a Scheduled Task running as SYSTEM; run from an
 elevated PowerShell prompt):
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN"
+iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN -BackendModel 'your-model-id'"
 ```
 
 Pass `-router`/`-llm-url` (Linux/macOS) or `-Router`/`-LlmUrl` (Windows) to
@@ -100,7 +106,8 @@ curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/inst
   -token "$REGISTRATION_TOKEN" \
   -api-url https://api.example.com \
   -api-token "$REGISTRATION_TOKEN" \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -backend-model "your-model-id"
 ```
 
 - Set `VERSION=v1.0.1` (env var, before the pipe) to pin a specific release
@@ -159,7 +166,8 @@ ExecStart=/usr/local/bin/box-agent \
   -router wss://router.example.com \
   -provider yourns/your-model \
   -api-url https://api.example.com \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -backend-model "your-model-id"
 Environment=AGENT_TOKEN=your-registration-token
 Environment=API_TOKEN=your-registration-token
 Restart=always
@@ -225,6 +233,8 @@ root, and root-only readable since it holds the tokens):
     <string>https://api.example.com</string>
     <string>-llm-url</string>
     <string>http://localhost:11434</string>
+    <string>-backend-model</string>
+    <string>your-model-id</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -291,7 +301,8 @@ docker run -d --name box-agent --restart unless-stopped \
   -router wss://router.example.com \
   -provider yourns/your-model \
   -api-url https://api.example.com \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -backend-model "your-model-id"
 ```
 
 `--network host` is the easiest way to let the container reach an LLM server

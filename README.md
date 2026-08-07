@@ -29,20 +29,26 @@ go build -o box-agent .
 ```
 ./box-agent \
   -provider oss-llama3 \
-  -token "$AGENT_TOKEN"
+  -token "$AGENT_TOKEN" \
+  -backend-model "llama3"
 ```
 
-`-router`, `-llm-url`, and `-api-url` all default to the greenference.com
-platform already, and `-token` doubles as `-api-token` unless you pass that
-separately — so `-provider`/`-token` are normally the only flags you need.
-Override any of them for a self-hosted router/LLM server:
+`-provider`, `-token`, and `-backend-model` are always required — box-agent
+never guesses the provider or model name (it used to auto-detect the model
+via `GET {-llm-url}/v1/models`, but that silently registered garbage
+whenever `-llm-url` wasn't a genuine single-model backend; it now requires
+`-backend-model` explicitly instead). `-router`, `-llm-url`, and `-api-url`
+default to the greenference.com platform, and `-token` doubles as
+`-api-token` unless you pass that separately. Override any of them for a
+self-hosted router/LLM server:
 
 ```
 ./box-agent \
   -router wss://router.example.com \
   -provider oss-llama3 \
   -token "$AGENT_TOKEN" \
-  -llm-url http://localhost:11434
+  -llm-url http://localhost:11434 \
+  -backend-model "llama3"
 ```
 
 | Flag | Env fallback | Default | Meaning |
@@ -50,9 +56,9 @@ Override any of them for a self-hosted router/LLM server:
 | `-router` | — | `wss://llm.greenference.com` | Router base URL (`ws://` or `wss://`). |
 | `-provider` | — | *(required)* | Provider name; must match an `agents:` key in the router's `config.yaml`. |
 | `-token` | `AGENT_TOKEN` | *(required)* | Shared secret for that provider name; also used as `-api-token` unless that's set separately. |
+| `-backend-model` | — | *(required)* | The model name — registered with the management API and sent to the local LLM backend. E.g. vLLM expects the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`), not just the router's `provider/model` suffix. |
 | `-llm-url` | — | `https://llm.greenference.com` | Base URL of the local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for the local LLM server, if it requires one. |
-| `-backend-model` | — | *(empty — pass through)* | Override the model name sent to the local LLM backend. Use this when the backend's own model id doesn't match the router's registered model name — e.g. the router only ever forwards the part of `provider/model` after the provider prefix, but vLLM identifies its loaded model by the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`, not just `Qwen3.6-40B-...`). |
 | `-api-url` | — | `https://api.greenference.com` | Base URL of the management API used to register this box-agent instance and sync which model it's serving. |
 | `-api-token` | `API_TOKEN` | *(defaults to `-token`)* | Bearer token identifying this agent instance to the management API, if it needs to differ from `-token`. |
 | `-is-public` | — | `true` | Whether this model/provider should be publicly listed (sent as `is_public` on registration). |
@@ -79,12 +85,10 @@ codes, and a scripted rollout example.
 
 ## Behavior
 
-- On boot, registers with the management API (`-api-url`/`-api-token`),
-  reporting which model this instance is serving — either `-backend-model`
-  if set, or whatever the local LLM server's `/v1/models` endpoint reports
-  as loaded. This lets the API keep track of which model is running behind
-  each agent instance's token. Registration happens once at startup, before
-  the router connect loop; a failure here is fatal.
+- On boot, registers `-backend-model` with the management API
+  (`-api-url`/`-api-token`), so it can keep track of which model is running
+  behind each agent instance's token. Registration happens once at startup,
+  before the router connect loop; a failure here is fatal.
 - Reconnects automatically (fixed 5s delay) if the connection to the router
   drops.
 - Answers the router's WebSocket pings so the connection isn't reaped as
@@ -103,8 +107,9 @@ without Ollama/vLLM/etc. running:
 go run ./cmd/fakellm -addr :11434
 ```
 
-Point `-llm-url http://localhost:11434` at it and box-agent will register a
-fake model and echo back whatever the router sends it, on both the
+Point `-llm-url http://localhost:11434 -backend-model fake-model` at it
+(`fake-model` is fakellm's own `-model` default — match whatever you passed
+it) and box-agent will echo back whatever the router sends it, on both the
 streaming and non-streaming paths. To exercise tool-calling, send a chat
 where the last user message is `TOOL:<name>:<json-args>` (e.g.
 `TOOL:get_weather:{"city":"Istanbul"}`) — fakellm responds with a matching
@@ -126,11 +131,12 @@ every reply.
 
 **One-command install** — downloads (or builds, if no release binary is
 published for your OS/arch) the box-agent binary, installs it to survive
-reboots/crashes, and starts it. `-router`/`-api-url`/`-llm-url` all default
-to the platform already and `-token` doubles as `-api-token`, so
-`-provider`/`-token` are normally all you need to pass. Full reference (all
-flags, overriding for a self-hosted router/LLM server, manual/Docker
-alternatives): [`docs/INSTALL.md`](docs/INSTALL.md).
+reboots/crashes, and starts it. `-provider`/`-token`/`-backend-model` are
+always required — box-agent never guesses the provider or model name.
+`-router`/`-api-url`/`-llm-url` default to the platform already and
+`-token` doubles as `-api-token`. Full reference (all flags, overriding for
+a self-hosted router/LLM server, manual/Docker alternatives):
+[`docs/INSTALL.md`](docs/INSTALL.md).
 
 **Linux** (installs a systemd service; run as root):
 
@@ -138,7 +144,8 @@ alternatives): [`docs/INSTALL.md`](docs/INSTALL.md).
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN"
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "your-model-id"
 ```
 
 **macOS** (installs a launchd daemon; run as root — same script as Linux,
@@ -148,14 +155,15 @@ OS is auto-detected):
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
   | sudo bash -s -- \
       -provider yourns/your-model \
-      -token "$REGISTRATION_TOKEN"
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "your-model-id"
 ```
 
 **Windows** (installs a Scheduled Task; run from an elevated PowerShell
 prompt):
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN"
+iex "& { $(irm https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.ps1) } -Provider yourns/your-model -Token $env:REGISTRATION_TOKEN -BackendModel 'your-model-id'"
 ```
 
 Release binaries are published for `linux/amd64`, `linux/arm64`,

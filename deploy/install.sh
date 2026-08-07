@@ -7,14 +7,16 @@
 # steps this script automates).
 #
 # Usage (flags mirror box-agent's own -flag names; run with -h for all of
-# them). -router/-api-url/-llm-url all default to the greenference.com
-# platform already, and -token doubles as -api-token unless that's given
-# separately, so -provider/-token are normally all you need to pass:
+# them). -provider/-token/-backend-model are always required - box-agent
+# does not guess the provider or model name. -router/-api-url/-llm-url
+# default to the greenference.com platform already, and -token doubles as
+# -api-token unless that's given separately:
 #
 #   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
 #     | sudo bash -s -- \
 #         -provider yourns/your-model \
-#         -token "$REGISTRATION_TOKEN"
+#         -token "$REGISTRATION_TOKEN" \
+#         -backend-model "your-model-id"
 #
 # Every flag can also be set via an identically-named (upper-cased, with
 # "-" -> "_") environment variable instead, e.g. PROVIDER=... TOKEN=...
@@ -32,12 +34,14 @@ REPO="LLMOcean/box.agent"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: install.sh -provider NAME -token TOK [options]
+Usage: install.sh -provider NAME -token TOK -backend-model NAME [options]
 
 Required:
   -provider NAME           provider name, e.g. yourns/your-model
   -token TOKEN              registration token (or TOKEN/AGENT_TOKEN env var);
                             also used as -api-token unless that's set separately
+  -backend-model NAME       the model name - registered with the management
+                            API and sent to the local LLM backend
 
 box-agent flags (see docs/USAGE.md for details):
   -router URL               default: wss://llm.greenference.com
@@ -45,7 +49,6 @@ box-agent flags (see docs/USAGE.md for details):
   -api-token TOKEN           default: same as -token (or API_TOKEN env var)
   -llm-url URL               default: https://llm.greenference.com
   -llm-api-key KEY
-  -backend-model NAME
   -is-public BOOL            default: true
   -input-per-million N       default: 0 (unreported)
   -output-per-million N      default: 0 (unreported)
@@ -135,8 +138,8 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "error: must be run as root (try: sudo $0 ...)" >&2
   exit 1
 fi
-if [ -z "$PROVIDER" ] || [ -z "$TOKEN" ]; then
-  echo "error: -provider and -token are required" >&2
+if [ -z "$PROVIDER" ] || [ -z "$TOKEN" ] || [ -z "$BACKEND_MODEL" ]; then
+  echo "error: -provider, -token, and -backend-model are all required - box-agent does not guess these" >&2
   usage
   exit 1
 fi
