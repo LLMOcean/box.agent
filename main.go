@@ -53,6 +53,9 @@ func runAgent() {
 	backendModel := flag.String("backend-model", "", "override the model name sent to the local LLM backend (use when the backend's own model id differs from the router's registered model name, e.g. vLLM expects the full repo id it was started with)")
 	apiURL := flag.String("api-url", "http://localhost:8000", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN)")
+	isPublic := flag.Bool("is-public", true, "whether this model/provider should be publicly listed (sent as is_public on registration)")
+	inputPerMillion := flag.Float64("input-per-million", 0, "input price per million tokens to report at registration (0 = unreported)")
+	outputPerMillion := flag.Float64("output-per-million", 0, "output price per million tokens to report at registration (0 = unreported)")
 	contextLength := flag.Int("context-length", 0, "context window size in tokens this backend supports (0 = unreported)")
 	maxOutputLength := flag.Int("max-output-length", 0, "max output tokens this backend supports (0 = unreported)")
 	quantization := flag.String("quantization", "", "quantization of the served model, e.g. \"fp8\", \"int4\" (empty = unreported)")
@@ -107,10 +110,10 @@ func runAgent() {
 	}
 	log.Printf("provider found: instance_name=%s", identity.InstanceName)
 
-	if err := api.registerModel(model, apiProviderName); err != nil {
+	if err := api.registerModel(model, apiProviderName, *isPublic, *inputPerMillion, *outputPerMillion); err != nil {
 		log.Fatalf("register with API: %v", err)
 	}
-	log.Printf("registered with API: model=%s provider=%s", model, apiProviderName)
+	log.Printf("registered with API: model=%s provider=%s is_public=%v", model, apiProviderName, *isPublic)
 
 	caps := &Capabilities{
 		ContextLength:     *contextLength,

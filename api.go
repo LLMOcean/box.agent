@@ -21,8 +21,11 @@ type apiClient struct {
 }
 
 type registerModelRequest struct {
-	Model    string `json:"model"`
-	Provider string `json:"provider,omitempty"`
+	Model            string  `json:"model"`
+	Provider         string  `json:"provider,omitempty"`
+	IsPublic         bool    `json:"is_public"`
+	InputPerMillion  float64 `json:"input_per_million,omitempty"`
+	OutputPerMillion float64 `json:"output_per_million,omitempty"`
 }
 
 // AgentIdentity is the orchestrator's per-token identity for this box-agent
@@ -82,8 +85,21 @@ func (a *apiClient) authenticate() (*AgentIdentity, error) {
 // non-empty provider lets the API move this instance to that provider,
 // creating it server-side if it doesn't exist yet - see
 // AgentInstancesService::registerModel() in the management API.
-func (a *apiClient) registerModel(model, provider string) error {
-	payload, err := json.Marshal(registerModelRequest{Model: model, Provider: provider})
+//
+// isPublic, inputPerMillion, and outputPerMillion are sent alongside the
+// request but, as of this writing, AgentInstancesService::registerModel()
+// only reads model/provider/name from it - these three are accepted here
+// so box-agent is ready as soon as that endpoint is updated to honor them
+// (it currently creates provider/model rows via a raw Eloquent create that
+// ignores unknown fields, so today these are silently dropped server-side).
+func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPerMillion, outputPerMillion float64) error {
+	payload, err := json.Marshal(registerModelRequest{
+		Model:            model,
+		Provider:         provider,
+		IsPublic:         isPublic,
+		InputPerMillion:  inputPerMillion,
+		OutputPerMillion: outputPerMillion,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
