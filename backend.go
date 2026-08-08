@@ -10,6 +10,22 @@ import (
 	"strings"
 )
 
+// backendError classifies a non-200 response from the local LLM backend with
+// its real HTTP status, instead of collapsing it into a plain string like
+// fmt.Errorf does. connection.go's handleChat reads StatusCode back out via
+// errors.As to put it on the "error" Frame sent to the router - without it,
+// the router had no way to tell a backend's 400 (bad tools/validation, the
+// client's fault) apart from a genuine connect failure, and flattened both
+// to a hardcoded 502.
+type backendError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *backendError) Error() string {
+	return fmt.Sprintf("llm backend error (status %d): %s", e.StatusCode, e.Body)
+}
+
 // llmBackend talks to a local OpenAI-compatible LLM server. Ollama, vLLM,
 // llama.cpp-server, and text-generation-inference all implement this wire
 // format at POST /v1/chat/completions, so one client covers all of them.
@@ -109,7 +125,7 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 		return "", nil, "", nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, "", nil, fmt.Errorf("llm backend error (status %d): %s", resp.StatusCode, string(respBody))
+		return "", nil, "", nil, &backendError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var or struct {
@@ -168,7 +184,7 @@ func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, t
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("llm backend error (status %d): %s", resp.StatusCode, string(respBody))
+		return &backendError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var inputTokens, outputTokens int

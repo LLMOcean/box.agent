@@ -30,6 +30,14 @@ type Frame struct {
 	FinishReason string           `json:"finish_reason,omitempty"`
 	ToolCalls    []ToolCall       `json:"tool_calls,omitempty"`
 	Error        string           `json:"error,omitempty"`
+	// ErrorStatusCode is the local LLM backend's real HTTP status when Error
+	// came from a non-200 backend response (see backendError in backend.go) -
+	// "error" frames only, 0 when unknown (e.g. a network-level failure
+	// reaching the backend at all, not a response it sent). Lets the router
+	// tell a backend's 400 (the client's fault - bad tools/params) apart from
+	// a genuine connect failure, instead of flattening every "error" frame to
+	// one hardcoded status.
+	ErrorStatusCode int `json:"error_status_code,omitempty"`
 	Capabilities *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
 	Prompt       string           `json:"prompt,omitempty"`       // "benchmark" request: prompt to send (defaults to a built-in one if empty)
 	Benchmark    *BenchmarkResult `json:"benchmark,omitempty"`    // "benchmark_result" response

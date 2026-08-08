@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	json "github.com/goccy/go-json"
 	"log"
@@ -140,7 +141,7 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 	if !req.Stream {
 		content, usage, finishReason, toolCalls, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
-			send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})
+			send(errorFrame(req.RequestID, err))
 			return
 		}
 		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
@@ -171,6 +172,20 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		})
 	if err != nil {
-		send(Frame{Type: "error", RequestID: req.RequestID, Error: err.Error()})
+		send(errorFrame(req.RequestID, err))
 	}
+}
+
+// errorFrame builds an "error" Frame for err, attaching the backend's real
+// HTTP status when err is a *backendError (a non-200 response the backend
+// itself sent, as opposed to a network-level failure reaching it at all -
+// see backend.go) so the router can classify a client-caused 400 apart from
+// a genuine connect failure instead of treating every error alike.
+func errorFrame(requestID string, err error) Frame {
+	f := Frame{Type: "error", RequestID: requestID, Error: err.Error()}
+	var be *backendError
+	if errors.As(err, &be) {
+		f.ErrorStatusCode = be.StatusCode
+	}
+	return f
 }

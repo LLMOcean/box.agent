@@ -159,6 +159,7 @@ shape (fields not relevant to a given `type` are omitted):
 | `finish_reason` | string | `response`, `final` | One of `"stop"`, `"length"`, `"tool_calls"`, `"content_filter"` — normalize to this vocabulary regardless of what the underlying LLM server reports. |
 | `tool_calls` | array | `response`, `final` | Accumulated across a stream and attached once, like `usage`/`finish_reason`, not streamed incrementally. |
 | `error` | string | `error` | Human-readable error message. Sent instead of `response`/`final` if the request failed. |
+| `error_status_code` | int | `error` | The local backend's real HTTP status, when `error` came from a non-200 response it sent (e.g. `400` for a bad `tools` request) rather than a network-level failure to reach it at all. Omit (or `0`) when there's no real status to report — the router then falls back to `502`. See `backendError` in `backend.go`. |
 | `capabilities` | object | `hello` | See §1a. |
 
 ## 4. Non-streaming exchange
@@ -191,6 +192,7 @@ agent's chunks shows up directly to the end customer.
 
 ```
 Agent → Router: {"type":"error","request_id":"r3","error":"model not loaded"}
+Agent → Router: {"type":"error","request_id":"r4","error":"llm backend error (status 400): ...","error_status_code":400}
 ```
 
 Send this instead of a `response`/`final` frame (not in addition to one). The
