@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	json "github.com/goccy/go-json"
 	"os"
 	"os/exec"
 	"runtime"
@@ -98,7 +99,7 @@ func runLLMBenchmark(backend *llmBackend, model, prompt string) LLMBenchmark {
 	msgs := []openaiMessage{{Role: "user", Content: prompt}}
 
 	err := backend.stream(model, msgs, 0, nil, nil, SamplingParams{},
-		func(chunk string) {
+		func(chunk string, logprobs json.RawMessage) {
 			if firstTokenAt.IsZero() {
 				firstTokenAt = time.Now()
 			}

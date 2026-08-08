@@ -139,19 +139,19 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 	}
 
 	if !req.Stream {
-		content, usage, finishReason, toolCalls, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
+		content, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
 			send(errorFrame(req.RequestID, err))
 			return
 		}
 		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
-		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
+		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs})
 		return
 	}
 
 	firstChunk := true // backend.stream calls onChunk synchronously from one goroutine - no lock needed
 	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
-		func(chunk string) {
+		func(chunk string, logprobs json.RawMessage) {
 			if firstChunk {
 				firstChunk = false
 				backendTTFT := time.Since(recvAt)
@@ -161,12 +161,12 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 				// stream sends only affects total throughput, not TTFT, so
 				// isn't worth timing/logging per-chunk).
 				sendStart := time.Now()
-				send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk})
+				send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk, LogprobsResult: logprobs})
 				debugLog("[agent] request_id=%s backend_ttft_ms=%d first_chunk_marshal_send_us=%d",
 					req.RequestID, backendTTFT.Milliseconds(), time.Since(sendStart).Microseconds())
 				return
 			}
-			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk})
+			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk, LogprobsResult: logprobs})
 		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})

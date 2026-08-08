@@ -100,8 +100,10 @@ func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
 }
 
 // chat performs a non-streaming completion and returns the full content,
-// usage, normalized finish reason, and any tool calls the model made.
-func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams) (string, *Usage, string, []ToolCall, error) {
+// usage, normalized finish reason, any tool calls the model made, and the
+// backend's own logprobs object verbatim (nil unless params.Logprobs asked
+// for it).
+func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams) (string, *Usage, string, []ToolCall, json.RawMessage, error) {
 	httpReq, err := b.newRequest(openaiChatRequest{
 		Model:          b.effectiveModel(model),
 		Messages:       msgs,
@@ -111,21 +113,21 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 		SamplingParams: params,
 	})
 	if err != nil {
-		return "", nil, "", nil, err
+		return "", nil, "", nil, nil, err
 	}
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("send request: %w", err)
+		return "", nil, "", nil, nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("read response: %w", err)
+		return "", nil, "", nil, nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, "", nil, &backendError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return "", nil, "", nil, nil, &backendError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var or struct {
@@ -134,7 +136,8 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 				Content   string     `json:"content"`
 				ToolCalls []ToolCall `json:"tool_calls"`
 			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
+			FinishReason string          `json:"finish_reason"`
+			Logprobs     json.RawMessage `json:"logprobs"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -142,18 +145,20 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &or); err != nil {
-		return "", nil, "", nil, fmt.Errorf("unmarshal response: %w", err)
+		return "", nil, "", nil, nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	var content, finishReason string
 	var toolCalls []ToolCall
+	var logprobs json.RawMessage
 	if len(or.Choices) > 0 {
 		content = or.Choices[0].Message.Content
 		finishReason = or.Choices[0].FinishReason
 		toolCalls = or.Choices[0].Message.ToolCalls
+		logprobs = or.Choices[0].Logprobs
 	}
 	usage := &Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens}
-	return content, usage, finishReason, toolCalls, nil
+	return content, usage, finishReason, toolCalls, logprobs, nil
 }
 
 // stream performs a streaming completion, calling onChunk for every
@@ -161,7 +166,7 @@ func (b *llmBackend) chat(model string, msgs []openaiMessage, maxTokens int, too
 // calls are accumulated across the stream (vLLM, like OpenAI, streams them
 // as incremental per-index argument deltas) and passed to onFinal whole,
 // rather than forwarded chunk by chunk.
-func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams, onChunk func(string), onFinal func(*Usage, string, []ToolCall)) error {
+func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, tools []ToolDefinition, toolChoice json.RawMessage, params SamplingParams, onChunk func(string, json.RawMessage), onFinal func(*Usage, string, []ToolCall)) error {
 	httpReq, err := b.newRequest(openaiChatRequest{
 		Model:          b.effectiveModel(model),
 		Messages:       msgs,
@@ -216,7 +221,8 @@ func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, t
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
-				FinishReason string `json:"finish_reason"`
+				FinishReason string          `json:"finish_reason"`
+				Logprobs     json.RawMessage `json:"logprobs"`
 			} `json:"choices"`
 			Usage *struct {
 				PromptTokens     int `json:"prompt_tokens"`
@@ -233,7 +239,7 @@ func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, t
 		}
 		if len(chunk.Choices) > 0 {
 			if chunk.Choices[0].Delta.Content != "" {
-				onChunk(chunk.Choices[0].Delta.Content)
+				onChunk(chunk.Choices[0].Delta.Content, chunk.Choices[0].Logprobs)
 			}
 			if chunk.Choices[0].FinishReason != "" {
 				finishReason = chunk.Choices[0].FinishReason

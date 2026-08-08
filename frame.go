@@ -16,20 +16,27 @@ import json "github.com/goccy/go-json"
 // docs/BENCHMARK.md) and are not yet part of the upstream router.agent
 // protocol docs copied into this repo.
 type Frame struct {
-	Type         string           `json:"type"` // "chat" | "hello" | "benchmark" | "chunk" | "response" | "final" | "error" | "benchmark_result"
-	RequestID    string           `json:"request_id"`
-	Model        string           `json:"model,omitempty"`
-	System       string           `json:"system,omitempty"`
-	Messages     []Message        `json:"messages,omitempty"`
-	Stream       bool             `json:"stream,omitempty"`
-	MaxTokens    int              `json:"max_tokens,omitempty"`
-	Tools        []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice   json.RawMessage  `json:"tool_choice,omitempty"`
-	Content      string           `json:"content,omitempty"`
-	Usage        *Usage           `json:"usage,omitempty"`
-	FinishReason string           `json:"finish_reason,omitempty"`
-	ToolCalls    []ToolCall       `json:"tool_calls,omitempty"`
-	Error        string           `json:"error,omitempty"`
+	Type       string           `json:"type"` // "chat" | "hello" | "benchmark" | "chunk" | "response" | "final" | "error" | "benchmark_result"
+	RequestID  string           `json:"request_id"`
+	Model      string           `json:"model,omitempty"`
+	System     string           `json:"system,omitempty"`
+	Messages   []Message        `json:"messages,omitempty"`
+	Stream     bool             `json:"stream,omitempty"`
+	MaxTokens  int              `json:"max_tokens,omitempty"`
+	Tools      []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice json.RawMessage  `json:"tool_choice,omitempty"`
+	Content    string           `json:"content,omitempty"`
+	// LogprobsResult is the local backend's own OpenAI-shaped
+	// choices[0].logprobs object, carried through verbatim as opaque JSON -
+	// "chunk"/"response" frames only, same directions as Content. Named
+	// distinctly from SamplingParams.Logprobs below (whether the client
+	// asked for logprobs at all) since they're different things sharing
+	// this one flat struct.
+	LogprobsResult json.RawMessage `json:"logprobs_result,omitempty"`
+	Usage          *Usage          `json:"usage,omitempty"`
+	FinishReason   string          `json:"finish_reason,omitempty"`
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
+	Error          string          `json:"error,omitempty"`
 	// ErrorStatusCode is the local LLM backend's real HTTP status when Error
 	// came from a non-200 backend response (see backendError in backend.go) -
 	// "error" frames only, 0 when unknown (e.g. a network-level failure
@@ -37,10 +44,10 @@ type Frame struct {
 	// tell a backend's 400 (the client's fault - bad tools/params) apart from
 	// a genuine connect failure, instead of flattening every "error" frame to
 	// one hardcoded status.
-	ErrorStatusCode int `json:"error_status_code,omitempty"`
-	Capabilities *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
-	Prompt       string           `json:"prompt,omitempty"`       // "benchmark" request: prompt to send (defaults to a built-in one if empty)
-	Benchmark    *BenchmarkResult `json:"benchmark,omitempty"`    // "benchmark_result" response
+	ErrorStatusCode int              `json:"error_status_code,omitempty"`
+	Capabilities    *Capabilities    `json:"capabilities,omitempty"` // "hello" only, sent once right after connecting
+	Prompt          string           `json:"prompt,omitempty"`       // "benchmark" request: prompt to send (defaults to a built-in one if empty)
+	Benchmark       *BenchmarkResult `json:"benchmark,omitempty"`    // "benchmark_result" response
 
 	// Sampling/output-control parameters - "chat" only, forwarded to the
 	// local backend verbatim (same field names/types OpenAI's API uses; see
