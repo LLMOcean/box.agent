@@ -45,17 +45,26 @@ type openaiMessage struct {
 }
 
 type openaiChatRequest struct {
-	Model      string           `json:"model"`
-	Messages   []openaiMessage  `json:"messages"`
-	Stream     bool             `json:"stream,omitempty"`
-	MaxTokens  int              `json:"max_tokens,omitempty"`
-	Tools      []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice json.RawMessage  `json:"tool_choice,omitempty"`
+	Model         string           `json:"model"`
+	Messages      []openaiMessage  `json:"messages"`
+	Stream        bool             `json:"stream,omitempty"`
+	StreamOptions *streamOptions   `json:"stream_options,omitempty"`
+	MaxTokens     int              `json:"max_tokens,omitempty"`
+	Tools         []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage  `json:"tool_choice,omitempty"`
 
 	// Sampling parameters, forwarded verbatim from the router's chat frame -
 	// same field names most OpenAI-compatible servers (Ollama, vLLM) already
 	// expect. See SamplingParams in frame.go.
 	SamplingParams
+}
+
+// streamOptions requests the final usage-bearing SSE chunk on a streaming
+// completion. Without this, vLLM/OpenAI-compatible backends omit usage
+// entirely from the stream, which is why stream() below used to report
+// InputTokens/OutputTokens as 0 for every streamed request.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 func (b *llmBackend) newRequest(body openaiChatRequest) (*http.Request, error) {
@@ -141,6 +150,7 @@ func (b *llmBackend) stream(model string, msgs []openaiMessage, maxTokens int, t
 		Model:          b.effectiveModel(model),
 		Messages:       msgs,
 		Stream:         true,
+		StreamOptions:  &streamOptions{IncludeUsage: true},
 		MaxTokens:      maxTokens,
 		Tools:          tools,
 		ToolChoice:     toolChoice,
