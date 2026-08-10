@@ -53,6 +53,7 @@ func runAgent() {
 	llmURL := flag.String("llm-url", "https://llm.greenference.com", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "model name to register and to send to the local LLM backend (required) - e.g. vLLM expects the full repo id it was started with, like \"tcclaviger/Qwen3.6-40B-...\"")
+	installModel := flag.Bool("install-model", false, "pull -backend-model via Ollama (using -llm-url) before starting, if it isn't already installed - equivalent to running \"box-agent install-model\" first, but as one step")
 	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set. When -token itself is unset, this must be an IAM/account-level token used to auto-provision an agent instance instead")
 	tokenCache := flag.String("token-cache", "/var/lib/box-agent/token", "local file to cache an auto-provisioned agent token across restarts, so box-agent doesn't provision a new agent instance every run - only used when -token isn't set. Set to empty to disable caching")
@@ -86,6 +87,18 @@ func runAgent() {
 	if *token == "" && *apiToken == "" {
 		log.Fatal("either -token (an existing agent token) or -api-token (an IAM/account token to auto-provision one) is required")
 	}
+
+	if *installModel {
+		log.Printf("installing model %q via Ollama before starting", *backendModel)
+		if err := ensureOllamaInstalled(); err != nil {
+			log.Fatalf("install model: %v", err)
+		}
+		if err := pullModel(*llmURL, *backendModel); err != nil {
+			log.Fatalf("install model: %v", err)
+		}
+		log.Printf("installed %q", *backendModel)
+	}
+
 	// -token and -api-token are the same value in practice (one
 	// registration token authenticates both the router connection and the
 	// management API) - fall back to -token so operators only pass one,
