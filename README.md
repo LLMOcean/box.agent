@@ -37,17 +37,18 @@ go build -o box-agent .
 never guesses the provider or model name (it used to auto-detect the model
 via `GET {-llm-url}/v1/models`, but that silently registered garbage
 whenever `-llm-url` wasn't a genuine single-model backend; it now requires
-`-backend-model` explicitly instead). `-router`, `-llm-url`, and `-api-url`
-default to the greenference.com platform, and `-token` doubles as
-`-api-token` unless you pass that separately. Override any of them for a
-self-hosted router/LLM server:
+`-backend-model` explicitly instead). `-router` and `-api-url` default to
+the greenference.com platform, `-llm-url` defaults to a local server on
+this box (`http://localhost:8000`), and `-token` doubles as `-api-token`
+unless you pass that separately. Override any of them for a self-hosted
+router or a differently-addressed LLM server:
 
 ```
 ./box-agent \
   -router wss://router.example.com \
   -provider oss-llama3 \
   -token "$AGENT_TOKEN" \
-  -llm-url http://localhost:11434 \
+  -llm-url http://localhost:8000 \
   -backend-model "llama3"
 ```
 
@@ -57,7 +58,7 @@ self-hosted router/LLM server:
 | `-provider` | — | *(required)* | Provider name; must match an `agents:` key in the router's `config.yaml`. |
 | `-token` | `AGENT_TOKEN` | *(required)* | Shared secret for that provider name; also used as `-api-token` unless that's set separately. |
 | `-backend-model` | — | *(required)* | The model name — registered with the management API and sent to the local LLM backend. E.g. vLLM expects the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`), not just the router's `provider/model` suffix. |
-| `-llm-url` | — | `https://llm.greenference.com` | Base URL of the local OpenAI-compatible LLM server. |
+| `-llm-url` | — | `http://localhost:8000` | Base URL of the local OpenAI-compatible LLM server. |
 | `-llm-api-key` | `LLM_API_KEY` | *(empty)* | Bearer token for the local LLM server, if it requires one. |
 | `-api-url` | — | `https://api.greenference.com` | Base URL of the management API used to register this box-agent instance and sync which model it's serving. |
 | `-api-token` | `API_TOKEN` | *(defaults to `-token`)* | Bearer token identifying this agent instance to the management API, if it needs to differ from `-token`. |
@@ -117,10 +118,10 @@ codes, and a scripted rollout example.
 without Ollama/vLLM/etc. running:
 
 ```
-go run ./cmd/fakellm -addr :11434
+go run ./cmd/fakellm -addr :8000
 ```
 
-Point `-llm-url http://localhost:11434 -backend-model fake-model` at it
+Point `-llm-url http://localhost:8000 -backend-model fake-model` at it
 (`fake-model` is fakellm's own `-model` default — match whatever you passed
 it) and box-agent will echo back whatever the router sends it, on both the
 streaming and non-streaming paths. To exercise tool-calling, send a chat
@@ -146,20 +147,18 @@ every reply.
 published for your OS/arch) the box-agent binary, installs it to survive
 reboots/crashes, and starts it. `-provider`/`-token`/`-backend-model` are
 always required — box-agent never guesses the provider or model name.
-`-router`/`-api-url`/`-llm-url` default to the platform already and
-`-token` doubles as `-api-token`. Full reference (all flags, overriding for
-a self-hosted router/LLM server, manual/Docker alternatives):
-[`docs/INSTALL.md`](docs/INSTALL.md).
+`-router`/`-api-url` default to the platform already, `-llm-url` defaults
+to a local server on this box, and `-token` doubles as `-api-token`. Full
+reference (all flags, overriding for a self-hosted router/LLM server,
+manual/Docker alternatives): [`docs/INSTALL.md`](docs/INSTALL.md).
 
 **One-time / no persistence** — same download, but runs box-agent directly
 in the foreground instead of installing a systemd/launchd service: no root
 required (beyond whatever Ollama's own installer needs), nothing survives a
 reboot or Ctrl-C. Add `-install-model` to also pull `-backend-model` via
 Ollama first, so this one command deploys the LLM, deploys box-agent, and
-registers it with the router. `-install-model` implies `-llm-url
-http://localhost:11434` (rather than the platform default) unless you pass
-`-llm-url` yourself, since the model gets pulled onto — and then served
-from — Ollama running on this box:
+registers it with the router. Ollama gets started (if not already running)
+on `-llm-url`, `http://localhost:8000` by default:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh \

@@ -50,10 +50,10 @@ func runAgent() {
 	routerURL := flag.String("router", "wss://llm.greenference.com", "router base URL (ws:// or wss://)")
 	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
 	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "an existing per-instance agent token (or set AGENT_TOKEN) - also used as -api-token unless that's set separately. If unset, -api-token must be an IAM/account-level token instead, which box-agent uses to auto-provision a new agent instance (and its token) on first run")
-	llmURL := flag.String("llm-url", "https://llm.greenference.com", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
+	llmURL := flag.String("llm-url", "http://localhost:8000", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "model name to register and to send to the local LLM backend (required) - e.g. vLLM expects the full repo id it was started with, like \"tcclaviger/Qwen3.6-40B-...\"")
-	installModel := flag.Bool("install-model", false, "pull -backend-model via a local Ollama server before starting, if it isn't already installed - equivalent to running \"box-agent install-model\" first, but as one step. Implies -llm-url http://localhost:11434 unless -llm-url is passed explicitly, since the model is pulled onto (and then served from) Ollama on this box, not whatever -llm-url otherwise defaults to")
+	installModel := flag.Bool("install-model", false, "pull -backend-model via Ollama (using -llm-url) before starting, if it isn't already installed - equivalent to running \"box-agent install-model\" first, but as one step")
 	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set. When -token itself is unset, this must be an IAM/account-level token used to auto-provision an agent instance instead")
 	tokenCache := flag.String("token-cache", "/var/lib/box-agent/token", "local file to cache an auto-provisioned agent token across restarts, so box-agent doesn't provision a new agent instance every run - only used when -token isn't set. Set to empty to disable caching")
@@ -86,26 +86,6 @@ func runAgent() {
 	}
 	if *token == "" && *apiToken == "" {
 		log.Fatal("either -token (an existing agent token) or -api-token (an IAM/account token to auto-provision one) is required")
-	}
-
-	// -install-model pulls -backend-model onto - and then, below, sends chat
-	// requests to - Ollama running on this box. -llm-url's own default is
-	// the greenference.com platform, not this box, so blindly reusing it
-	// here would make ensureOllamaRunning try to start a *local* "ollama
-	// serve" bound to that remote host's address (which can't succeed) and,
-	// even if it somehow could, would leave chat traffic going to the
-	// platform instead of the model -install-model just pulled. Only
-	// override when the operator didn't set -llm-url explicitly themselves.
-	if *installModel {
-		llmURLSet := false
-		flag.Visit(func(f *flag.Flag) {
-			if f.Name == "llm-url" {
-				llmURLSet = true
-			}
-		})
-		if !llmURLSet {
-			*llmURL = "http://localhost:11434"
-		}
 	}
 
 	if *installModel {
@@ -254,7 +234,7 @@ func splitCSV(s string) []string {
 // requires root), then runs `ollama pull` for model.
 func runInstallModel(args []string) {
 	fs := flag.NewFlagSet("install-model", flag.ExitOnError)
-	llmURL := fs.String("llm-url", "http://localhost:11434", "base URL of the local Ollama server")
+	llmURL := fs.String("llm-url", "http://localhost:8000", "base URL of the local Ollama server")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: box-agent install-model [-llm-url URL] <model>")
@@ -275,7 +255,7 @@ func runInstallModel(args []string) {
 // `ollama rm` for model.
 func runDeleteModel(args []string) {
 	fs := flag.NewFlagSet("delete-model", flag.ExitOnError)
-	llmURL := fs.String("llm-url", "http://localhost:11434", "base URL of the local Ollama server")
+	llmURL := fs.String("llm-url", "http://localhost:8000", "base URL of the local Ollama server")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: box-agent delete-model [-llm-url URL] <model>")

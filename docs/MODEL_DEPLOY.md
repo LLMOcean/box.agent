@@ -67,10 +67,10 @@ Runs `ollama rm <model>`. `<model>` must match an installed name/tag exactly
 
 ## `-llm-url`
 
-Defaults to `http://localhost:11434`, matching the daemon's own `-llm-url`
-default and box.agent's systemd unit. If you pass a non-default value, its
-host:port (scheme stripped) is exported as `OLLAMA_HOST` for the `ollama`
-subprocess, so both subcommands target the same server the daemon talks to.
+Defaults to `http://localhost:8000`, matching the daemon's own `-llm-url`
+default and box.agent's systemd unit. Its host:port (scheme stripped) is
+always exported as `OLLAMA_HOST` for the `ollama` subprocess, so both
+subcommands target the same server the daemon talks to.
 
 ## Automating a full rollout
 

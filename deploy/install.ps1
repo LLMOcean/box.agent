@@ -37,7 +37,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Token,
     [string]$ApiUrl = "https://api.greenference.com",
     [string]$ApiToken = $env:API_TOKEN,
-    [string]$LlmUrl = "https://llm.greenference.com",
+    [string]$LlmUrl = "http://localhost:8000",
     [string]$LlmApiKey,
     [Parameter(Mandatory = $true)][string]$BackendModel,
     [bool]$IsPublic = $true,

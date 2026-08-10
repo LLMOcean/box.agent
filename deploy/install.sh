@@ -8,8 +8,9 @@
 #
 # Usage (flags mirror box-agent's own -flag names; run with -h for all of
 # them). -provider/-backend-model are always required - box-agent does not
-# guess the provider or model name. -router/-api-url/-llm-url default to the
-# greenference.com platform already. For -token/-api-token, either:
+# guess the provider or model name. -router/-api-url default to the
+# greenference.com platform already; -llm-url defaults to a local server on
+# this box. For -token/-api-token, either:
 #
 #   - pass an existing per-instance -token (it doubles as -api-token unless
 #     that's given separately), or
@@ -60,7 +61,7 @@ box-agent flags (see docs/USAGE.md for details):
   -token-cache PATH          where an auto-provisioned token is cached across
                             restarts (default: /var/lib/box-agent/token);
                             only used when -token is omitted
-  -llm-url URL               default: https://llm.greenference.com
+  -llm-url URL               default: http://localhost:8000
   -llm-api-key KEY
   -is-public BOOL            default: true
   -input-per-million N       default: 0 (unreported)
@@ -85,7 +86,7 @@ TOKEN="${TOKEN:-${AGENT_TOKEN:-}}"
 API_URL="${API_URL:-https://api.greenference.com}"
 API_TOKEN="${API_TOKEN:-}"
 TOKEN_CACHE="${TOKEN_CACHE:-/var/lib/box-agent/token}"
-LLM_URL="${LLM_URL:-https://llm.greenference.com}"
+LLM_URL="${LLM_URL:-http://localhost:8000}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 BACKEND_MODEL="${BACKEND_MODEL:-}"
 IS_PUBLIC="${IS_PUBLIC:-}"

@@ -45,9 +45,10 @@ never guesses the provider or model name (see
 [§9](#9-verifying-and-troubleshooting) if you're wondering why: it used to
 auto-detect the model via `GET {-llm-url}/v1/models`, which silently
 registered garbage whenever `-llm-url` wasn't a genuine single-model
-backend). `-router`, `-api-url`, and `-llm-url` default to the platform
-already (`llm.greenference.com`/`api.greenference.com`), and `-token`
-doubles as `-api-token` unless given separately.
+backend). `-router` and `-api-url` default to the platform already
+(`llm.greenference.com`/`api.greenference.com`), `-llm-url` defaults to a
+local server on this box (`http://localhost:8000`), and `-token` doubles
+as `-api-token` unless given separately.
 
 **Linux** (installs a systemd service; run as root):
 

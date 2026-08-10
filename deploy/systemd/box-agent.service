@@ -3,7 +3,7 @@ Description=router.agent remote WebSocket agent (box.agent)
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/box-agent -router wss://router.example.com -provider oss-llama3 -llm-url http://localhost:11434
+ExecStart=/usr/local/bin/box-agent -router wss://router.example.com -provider oss-llama3 -llm-url http://localhost:8000
 Environment=AGENT_TOKEN=replace-me
 Restart=always
 RestartSec=5

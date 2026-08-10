@@ -36,10 +36,12 @@ func ensureOllamaInstalled() error {
 }
 
 // ollamaEnv returns the environment for an `ollama` subprocess, pointing it
-// at llmURL via OLLAMA_HOST when that's not just ollama's own default.
+// at llmURL via OLLAMA_HOST - always set (rather than left to ollama's own
+// built-in default of localhost:11434), so wherever `ollama serve` ends up
+// listening always matches -llm-url, whatever that's set to.
 func ollamaEnv(llmURL string) []string {
 	host := strings.TrimPrefix(strings.TrimPrefix(llmURL, "http://"), "https://")
-	if host == "" || host == "localhost:11434" {
+	if host == "" {
 		return os.Environ()
 	}
 	return append(os.Environ(), "OLLAMA_HOST="+host)
@@ -51,7 +53,7 @@ func ollamaEnv(llmURL string) []string {
 func ollamaBaseURL(llmURL string) string {
 	host := strings.TrimPrefix(strings.TrimPrefix(llmURL, "http://"), "https://")
 	if host == "" {
-		host = "localhost:11434"
+		host = "localhost:8000"
 	}
 	return "http://" + host
 }
