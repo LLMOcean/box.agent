@@ -151,6 +151,22 @@ always required — box-agent never guesses the provider or model name.
 a self-hosted router/LLM server, manual/Docker alternatives):
 [`docs/INSTALL.md`](docs/INSTALL.md).
 
+**One-time / no persistence** — same download, but runs box-agent directly
+in the foreground instead of installing a systemd/launchd service: no root
+required (beyond whatever Ollama's own installer needs), nothing survives a
+reboot or Ctrl-C. Add `-install-model` to also pull `-backend-model` via
+Ollama first, so this one command deploys the LLM, deploys box-agent, and
+registers it with the router:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh \
+  | bash -s -- \
+      -provider yourns/your-model \
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "your-model-id" \
+      -install-model
+```
+
 **Linux** (installs a systemd service; run as root):
 
 ```bash
