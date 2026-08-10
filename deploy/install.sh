@@ -7,10 +7,16 @@
 # steps this script automates).
 #
 # Usage (flags mirror box-agent's own -flag names; run with -h for all of
-# them). -provider/-token/-backend-model are always required - box-agent
-# does not guess the provider or model name. -router/-api-url/-llm-url
-# default to the greenference.com platform already, and -token doubles as
-# -api-token unless that's given separately:
+# them). -provider/-backend-model are always required - box-agent does not
+# guess the provider or model name. -router/-api-url/-llm-url default to the
+# greenference.com platform already. For -token/-api-token, either:
+#
+#   - pass an existing per-instance -token (it doubles as -api-token unless
+#     that's given separately), or
+#   - omit -token and pass an IAM/account-level -api-token instead - box-agent
+#     auto-provisions a new agent instance/token on first run and caches it
+#     at -token-cache (default: /var/lib/box-agent/token) so restarts reuse
+#     it instead of provisioning a new instance every time.
 #
 #   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
 #     | sudo bash -s -- \
@@ -34,19 +40,26 @@ REPO="LLMOcean/box.agent"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: install.sh -provider NAME -token TOK -backend-model NAME [options]
+Usage: install.sh -provider NAME -backend-model NAME (-token TOK | -api-token TOK) [options]
 
 Required:
   -provider NAME           provider name, e.g. yourns/your-model
-  -token TOKEN              registration token (or TOKEN/AGENT_TOKEN env var);
-                            also used as -api-token unless that's set separately
   -backend-model NAME       the model name - registered with the management
                             API and sent to the local LLM backend
+  -token TOKEN              an existing per-instance token (or TOKEN/AGENT_TOKEN
+                            env var); also used as -api-token unless that's set
+                            separately. If omitted, -api-token is required instead.
 
 box-agent flags (see docs/USAGE.md for details):
   -router URL               default: wss://llm.greenference.com
   -api-url URL               default: https://api.greenference.com
-  -api-token TOKEN           default: same as -token (or API_TOKEN env var)
+  -api-token TOKEN           default: same as -token (or API_TOKEN env var).
+                            If -token is omitted, this must be an IAM/account-
+                            level token instead, used to auto-provision a new
+                            agent instance/token on first run.
+  -token-cache PATH          where an auto-provisioned token is cached across
+                            restarts (default: /var/lib/box-agent/token);
+                            only used when -token is omitted
   -llm-url URL               default: https://llm.greenference.com
   -llm-api-key KEY
   -is-public BOOL            default: true
@@ -71,6 +84,7 @@ PROVIDER="${PROVIDER:-}"
 TOKEN="${TOKEN:-${AGENT_TOKEN:-}}"
 API_URL="${API_URL:-https://api.greenference.com}"
 API_TOKEN="${API_TOKEN:-}"
+TOKEN_CACHE="${TOKEN_CACHE:-/var/lib/box-agent/token}"
 LLM_URL="${LLM_URL:-https://llm.greenference.com}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 BACKEND_MODEL="${BACKEND_MODEL:-}"
@@ -99,6 +113,8 @@ while [ $# -gt 0 ]; do
     -api-url=*) API_URL="${1#*=}"; shift ;;
     -api-token) API_TOKEN="$2"; shift 2 ;;
     -api-token=*) API_TOKEN="${1#*=}"; shift ;;
+    -token-cache) TOKEN_CACHE="$2"; shift 2 ;;
+    -token-cache=*) TOKEN_CACHE="${1#*=}"; shift ;;
     -llm-url) LLM_URL="$2"; shift 2 ;;
     -llm-url=*) LLM_URL="${1#*=}"; shift ;;
     -llm-api-key) LLM_API_KEY="$2"; shift 2 ;;
@@ -138,15 +154,24 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "error: must be run as root (try: sudo $0 ...)" >&2
   exit 1
 fi
-if [ -z "$PROVIDER" ] || [ -z "$TOKEN" ] || [ -z "$BACKEND_MODEL" ]; then
-  echo "error: -provider, -token, and -backend-model are all required - box-agent does not guess these" >&2
+if [ -z "$PROVIDER" ] || [ -z "$BACKEND_MODEL" ]; then
+  echo "error: -provider and -backend-model are required - box-agent does not guess these" >&2
+  usage
+  exit 1
+fi
+if [ -z "$TOKEN" ] && [ -z "$API_TOKEN" ]; then
+  echo "error: either -token (an existing agent token) or -api-token (an IAM/account token to auto-provision one) is required" >&2
   usage
   exit 1
 fi
 # -token and -api-token are the same registration token in practice - fall
 # back so only one has to be passed, while still letting -api-token/
-# API_TOKEN override it if they ever diverge.
-[ -z "$API_TOKEN" ] && API_TOKEN="$TOKEN"
+# API_TOKEN override it if they ever diverge. Only applies when -token was
+# actually given; when it wasn't, -api-token is an IAM token for
+# auto-provisioning instead, not a per-instance one.
+if [ -n "$TOKEN" ] && [ -z "$API_TOKEN" ]; then
+  API_TOKEN="$TOKEN"
+fi
 
 uname_s="$(uname -s)"
 uname_m="$(uname -m)"
@@ -190,6 +215,9 @@ fi
 
 EXTRA_ARGS=()
 [ -n "$BACKEND_MODEL" ] && EXTRA_ARGS+=("-backend-model" "$BACKEND_MODEL")
+# Only relevant to the auto-provisioning path (-token omitted), but harmless
+# to always pass through - box-agent ignores it when -token is set directly.
+[ -z "$TOKEN" ] && EXTRA_ARGS+=("-token-cache" "$TOKEN_CACHE")
 [ -n "$IS_PUBLIC" ] && EXTRA_ARGS+=("-is-public" "$IS_PUBLIC")
 [ -n "$INPUT_PER_MILLION" ] && EXTRA_ARGS+=("-input-per-million" "$INPUT_PER_MILLION")
 [ -n "$OUTPUT_PER_MILLION" ] && EXTRA_ARGS+=("-output-per-million" "$OUTPUT_PER_MILLION")
@@ -208,6 +236,17 @@ if [ "$goos" = "linux" ]; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
   fi
 
+  if [ -z "$TOKEN" ]; then
+    # Auto-provisioning path: box-agent (running as SERVICE_USER, not root)
+    # needs write access to the token cache directory itself, since /var/lib
+    # is root-owned and not writable by an unprivileged user by default.
+    cache_dir="$(dirname "$TOKEN_CACHE")"
+    echo "Creating token cache dir ${cache_dir} (owned by ${SERVICE_USER})" >&2
+    mkdir -p "$cache_dir"
+    chown "$SERVICE_USER" "$cache_dir"
+    chmod 700 "$cache_dir"
+  fi
+
   extra_str="${EXTRA_ARGS[*]:-}"
   echo "Writing ${UNIT_PATH}" >&2
   {
@@ -217,7 +256,7 @@ if [ "$goos" = "linux" ]; then
     echo ""
     echo "[Service]"
     echo "ExecStart=${dest} -router ${ROUTER} -provider ${PROVIDER} -api-url ${API_URL} -llm-url ${LLM_URL}${extra_str:+ $extra_str}"
-    echo "Environment=AGENT_TOKEN=${TOKEN}"
+    [ -n "$TOKEN" ] && echo "Environment=AGENT_TOKEN=${TOKEN}"
     echo "Environment=API_TOKEN=${API_TOKEN}"
     [ -n "$LLM_API_KEY" ] && echo "Environment=LLM_API_KEY=${LLM_API_KEY}"
     echo "Restart=always"
@@ -276,8 +315,10 @@ elif [ "$goos" = "darwin" ]; then
     echo '  </array>'
     echo '  <key>EnvironmentVariables</key>'
     echo '  <dict>'
-    echo '    <key>AGENT_TOKEN</key>'
-    echo "    <string>$(xml_escape "$TOKEN")</string>"
+    if [ -n "$TOKEN" ]; then
+      echo '    <key>AGENT_TOKEN</key>'
+      echo "    <string>$(xml_escape "$TOKEN")</string>"
+    fi
     echo '    <key>API_TOKEN</key>'
     echo "    <string>$(xml_escape "$API_TOKEN")</string>"
     if [ -n "$LLM_API_KEY" ]; then
