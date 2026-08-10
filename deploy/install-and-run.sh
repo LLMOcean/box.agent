@@ -69,6 +69,42 @@ case "$uname_s" in
   *) echo "error: unsupported OS '$uname_s' - see docs/INSTALL.md #7 to build from source manually" >&2; exit 1 ;;
 esac
 
+# Ollama's own installer (run by box-agent's -install-model) downloads a
+# .tar.zst archive - best-effort install zstd ahead of time so extraction
+# never depends on whatever happens to already be on the image. Not fatal
+# if it can't be installed (no root/sudo, unknown package manager, ...):
+# print a warning and keep going, since box-agent doesn't require zstd
+# itself and Ollama's installer may already bundle its own extraction path.
+if [ "$goos" = "linux" ] && ! command -v zstd >/dev/null 2>&1; then
+  SUDO=""
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+  fi
+  if [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; then
+    echo "Installing zstd..." >&2
+    # `|| true` on every branch: best-effort only, must never abort the
+    # script under set -e - box-agent itself doesn't need zstd, and
+    # Ollama's installer may not either.
+    if command -v apt-get >/dev/null 2>&1; then
+      ($SUDO apt-get update -qq && $SUDO apt-get install -y -qq zstd) || echo "warning: zstd install failed - continuing without it" >&2
+    elif command -v dnf >/dev/null 2>&1; then
+      $SUDO dnf install -y -q zstd || echo "warning: zstd install failed - continuing without it" >&2
+    elif command -v yum >/dev/null 2>&1; then
+      $SUDO yum install -y -q zstd || echo "warning: zstd install failed - continuing without it" >&2
+    elif command -v apk >/dev/null 2>&1; then
+      $SUDO apk add --no-cache zstd || echo "warning: zstd install failed - continuing without it" >&2
+    elif command -v pacman >/dev/null 2>&1; then
+      $SUDO pacman -Sy --noconfirm zstd || echo "warning: zstd install failed - continuing without it" >&2
+    elif command -v zypper >/dev/null 2>&1; then
+      $SUDO zypper install -y zstd || echo "warning: zstd install failed - continuing without it" >&2
+    else
+      echo "warning: zstd not found and no supported package manager detected - continuing without it" >&2
+    fi
+  else
+    echo "warning: zstd not found and no root/sudo available to install it - continuing without it" >&2
+  fi
+fi
+
 mkdir -p "$INSTALL_DIR"
 dest="${INSTALL_DIR%/}/box-agent"
 asset="box-agent-${goos}-${goarch}"
