@@ -156,7 +156,10 @@ in the foreground instead of installing a systemd/launchd service: no root
 required (beyond whatever Ollama's own installer needs), nothing survives a
 reboot or Ctrl-C. Add `-install-model` to also pull `-backend-model` via
 Ollama first, so this one command deploys the LLM, deploys box-agent, and
-registers it with the router:
+registers it with the router. `-install-model` implies `-llm-url
+http://localhost:11434` (rather than the platform default) unless you pass
+`-llm-url` yourself, since the model gets pulled onto — and then served
+from — Ollama running on this box:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run.sh \
