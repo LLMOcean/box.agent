@@ -49,12 +49,13 @@ func main() {
 func runAgent() {
 	routerURL := flag.String("router", "wss://llm.greenference.com", "router base URL (ws:// or wss://)")
 	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
-	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "shared token for this provider (or set AGENT_TOKEN) - also used as -api-token unless that's set separately")
+	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "an existing per-instance agent token (or set AGENT_TOKEN) - also used as -api-token unless that's set separately. If unset, -api-token must be an IAM/account-level token instead, which box-agent uses to auto-provision a new agent instance (and its token) on first run")
 	llmURL := flag.String("llm-url", "https://llm.greenference.com", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "model name to register and to send to the local LLM backend (required) - e.g. vLLM expects the full repo id it was started with, like \"tcclaviger/Qwen3.6-40B-...\"")
 	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
-	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set")
+	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set. When -token itself is unset, this must be an IAM/account-level token used to auto-provision an agent instance instead")
+	tokenCache := flag.String("token-cache", "/var/lib/box-agent/token", "local file to cache an auto-provisioned agent token across restarts, so box-agent doesn't provision a new agent instance every run - only used when -token isn't set. Set to empty to disable caching")
 	isPublic := flag.Bool("is-public", true, "whether this model/provider should be publicly listed (sent as is_public on registration)")
 	inputPerMillion := flag.Float64("input-per-million", 0, "input price per million tokens to report at registration (0 = unreported)")
 	outputPerMillion := flag.Float64("output-per-million", 0, "output price per million tokens to report at registration (0 = unreported)")
@@ -79,15 +80,20 @@ func runAgent() {
 		log.Fatal("-connections must be >= 1")
 	}
 
-	if *provider == "" || *token == "" || *backendModel == "" {
-		log.Fatal("-provider, -token (or AGENT_TOKEN env var), and -backend-model are all required - box-agent does not guess these")
+	if *provider == "" || *backendModel == "" {
+		log.Fatal("-provider and -backend-model are required - box-agent does not guess these")
+	}
+	if *token == "" && *apiToken == "" {
+		log.Fatal("either -token (an existing agent token) or -api-token (an IAM/account token to auto-provision one) is required")
 	}
 	// -token and -api-token are the same value in practice (one
 	// registration token authenticates both the router connection and the
 	// management API) - fall back to -token so operators only pass one,
 	// while still letting -api-token/API_TOKEN override it if they ever
-	// diverge.
-	if *apiToken == "" {
+	// diverge. Only applies when -token was actually given directly; when
+	// it wasn't, -api-token is an IAM token for provisioning instead, not a
+	// per-instance one, so it must never be used as this fallback.
+	if *apiToken == "" && *token != "" {
 		apiToken = token
 	}
 
@@ -134,7 +140,26 @@ func runAgent() {
 		apiProviderName = apiProviderName[:idx]
 	}
 
-	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
+	// agentToken is the per-instance token that authenticates the router WS
+	// connect specifically. apiCallToken is what authenticates
+	// authenticate()/registerModel() - normally the same value, except right
+	// after auto-provisioning, where the operator's -api-token was an
+	// IAM/account token with no standing on those anonymous,
+	// per-instance-token routes and must be swapped for the new instance
+	// token too.
+	agentToken := *token
+	apiCallToken := *apiToken
+	if agentToken == "" {
+		provisioner := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
+		newToken, err := ensureAgentToken(provisioner, *tokenCache, apiProviderName, model)
+		if err != nil {
+			log.Fatalf("provision agent token: %v", err)
+		}
+		agentToken = newToken
+		apiCallToken = newToken
+	}
+
+	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: apiCallToken, client: &http.Client{}}
 
 	identity, err := api.authenticate()
 	if err != nil {
@@ -158,7 +183,7 @@ func runAgent() {
 
 	runConnLoop := func(connIdx int) {
 		for {
-			if err := connectAndServe(connectURL, *token, backend, caps); err != nil {
+			if err := connectAndServe(connectURL, agentToken, backend, caps); err != nil {
 				log.Printf("connection %d/%d error: %v — reconnecting in 5s", connIdx, *connections, err)
 			}
 			time.Sleep(5 * time.Second)
