@@ -54,7 +54,7 @@ router or a differently-addressed LLM server:
 
 | Flag | Env fallback | Default | Meaning |
 |---|---|---|---|
-| `-router` | — | `wss://llm.greenference.com` | Router base URL (`ws://` or `wss://`). |
+| `-router` | — | `wss://llm.eu.greenference.com` | Router base URL (`ws://` or `wss://`). |
 | `-provider` | — | *(required)* | Provider name; must match an `agents:` key in the router's `config.yaml`. |
 | `-token` | `AGENT_TOKEN` | *(required)* | Shared secret for that provider name; also used as `-api-token` unless that's set separately. |
 | `-backend-model` | — | *(required)* | The model name — registered with the management API and sent to the local LLM backend. E.g. vLLM expects the full repo id it was started with (`tcclaviger/Qwen3.6-40B-...`), not just the router's `provider/model` suffix. |

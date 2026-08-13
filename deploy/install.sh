@@ -52,7 +52,7 @@ Required:
                             separately. If omitted, -api-token is required instead.
 
 box-agent flags (see docs/USAGE.md for details):
-  -router URL               default: wss://llm.greenference.com
+  -router URL               default: wss://llm.eu.greenference.com
   -api-url URL               default: https://api.greenference.com
   -api-token TOKEN           default: same as -token (or API_TOKEN env var).
                             If -token is omitted, this must be an IAM/account-
@@ -80,7 +80,7 @@ Installer-only flags:
 EOF
 }
 
-ROUTER="${ROUTER:-wss://llm.greenference.com}"
+ROUTER="${ROUTER:-wss://llm.eu.greenference.com}"
 PROVIDER="${PROVIDER:-}"
 TOKEN="${TOKEN:-${AGENT_TOKEN:-}}"
 API_URL="${API_URL:-https://api.greenference.com}"

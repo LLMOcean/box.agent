@@ -47,7 +47,7 @@ func main() {
 }
 
 func runAgent() {
-	routerURL := flag.String("router", "wss://llm.greenference.com", "router base URL (ws:// or wss://)")
+	routerURL := flag.String("router", "wss://llm.eu.greenference.com", "router base URL (ws:// or wss://)")
 	provider := flag.String("provider", "", "provider name to register with the router, e.g. \"plusclouds\" (the running backend model is appended automatically as \"provider/model\" unless this already contains a \"/\")")
 	token := flag.String("token", os.Getenv("AGENT_TOKEN"), "an existing per-instance agent token (or set AGENT_TOKEN) - also used as -api-token unless that's set separately. If unset, -api-token must be an IAM/account-level token instead, which box-agent uses to auto-provision a new agent instance (and its token) on first run")
 	llmURL := flag.String("llm-url", "http://localhost:8000", "base URL of the local OpenAI-compatible LLM server (Ollama/vLLM)")

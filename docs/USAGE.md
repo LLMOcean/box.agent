@@ -77,7 +77,7 @@ auto-detecting the model via `GET {-llm-url}/v1/models`, but that silently
 registered whatever came back first, which broke badly if `-llm-url`
 wasn't a genuine single-model backend; it now requires `-backend-model`
 explicitly instead). `-router` and `-api-url` default to the platform
-already (`llm.greenference.com`/`api.greenference.com`), `-llm-url`
+already (`llm.eu.greenference.com`/`api.greenference.com`), `-llm-url`
 defaults to a local server on this box (`http://localhost:8000`), and
 `-token` doubles as `-api-token`. Pass any of those explicitly to override
 (e.g. pointing `-llm-url` at wherever your Ollama/vLLM server actually
@@ -111,7 +111,7 @@ connected: ws://chat.llmocean.com:8080/v1/agents/connect?provider=plusclouds%2Fq
 
 | Flag | Env fallback | Default | Meaning |
 |---|---|---|---|
-| `-router` | — | `wss://llm.greenference.com` | Router WebSocket URL. |
+| `-router` | — | `wss://llm.eu.greenference.com` | Router WebSocket URL. |
 | `-provider` | — | *(required)* | Your provider name, e.g. `plusclouds/qwen5.0-with-extras`. |
 | `-token` | `AGENT_TOKEN` | *(required)* | Your registration token, used to authenticate the router connection. Also used as `-api-token` unless that's set separately — normally the only token you need to pass. |
 | `-llm-url` | — | `http://localhost:8000` | Base URL of your local OpenAI-compatible LLM server. |
