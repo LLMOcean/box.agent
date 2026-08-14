@@ -169,6 +169,28 @@ curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/inst
       -install-model
 ```
 
+**Multiple routers at once** — box-agent only ever dials one `-router` per
+process, so connecting to several routers means running several instances.
+[`deploy/install-and-run-multi.sh`](deploy/install-and-run-multi.sh)
+downloads one shared binary and launches one process per line of a config
+file you provide (each line its own full flag set — `-router`, `-provider`,
+`-token`, `-llm-url`, ...); Ctrl-C, or any instance exiting, stops them all
+together:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run-multi.sh \
+  -o install-and-run-multi.sh
+cat > routers.conf <<'CONF'
+-router wss://llm.eu.greenference.com -provider yourns/model-a -backend-model "model-a-id" -token "$EU_TOKEN" -llm-url http://localhost:8000
+-router wss://llm.na.greenference.com -provider yourns/model-b -backend-model "model-b-id" -token "$NA_TOKEN" -llm-url http://localhost:8001
+CONF
+bash install-and-run-multi.sh -config routers.conf
+```
+
+(Needs the config file on disk first, so unlike the single-router script
+it can't be run as one `curl | bash` line — see the script's `-h` for
+details.)
+
 **Linux** (installs a systemd service; run as root):
 
 ```bash
