@@ -62,7 +62,10 @@ automates it — one shared binary download, one process launched per line
 of a config file you provide, and Ctrl-C (or any instance exiting) stops
 them all together. Its own `-install-model` flag pulls the shared model
 via Ollama once, before any instance starts, rather than once per
-instance. Run it with `-h` for the config file format.
+instance. For N genuinely different models on one host (e.g. 5 local
+models each registered to 2 routers — 10 instances, 5 pulls), use
+`-models FILE` instead — one `MODEL LLM_URL` pair per line, each pulled
+once. Run the script with `-h` for the exact format.
 
 Set `VERSION=v1.1.2` (env var) to pin a specific release instead of
 `latest`.

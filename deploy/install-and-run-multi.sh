@@ -35,13 +35,19 @@
 #   -install-model (INSTALL_MODEL) - pull this model via Ollama (at -llm-url)
 #                               once, before starting any instance - for the
 #                               common case of one shared local model across
-#                               all routers. Runs once, not once per line -
-#                               if instances use genuinely different models,
-#                               skip this and put -install-model on the
-#                               relevant box-agent line(s) in the config
-#                               file instead.
+#                               all routers. Runs once, not once per line.
 #   -llm-url (LLM_URL)         - where to pull -install-model, if given
 #                               (default: http://localhost:8000)
+#   -models (MODELS_FILE)      - for the N-different-models case (e.g. 5
+#                               models on 5 local servers, each registered
+#                               to 2 routers = 10 instances but only 5
+#                               distinct pulls): a file with one "MODEL
+#                               LLM_URL" pair per line, each pulled via
+#                               Ollama exactly once before any instance
+#                               starts. Blank lines and lines starting
+#                               with # are ignored. Combine with -config
+#                               lines that reference those same
+#                               -backend-model/-llm-url values.
 
 set -euo pipefail
 
@@ -51,6 +57,7 @@ INSTALL_DIR="${INSTALL_DIR:-.}"
 CONFIG="${CONFIG:-}"
 INSTALL_MODEL="${INSTALL_MODEL:-}"
 LLM_URL="${LLM_URL:-http://localhost:8000}"
+MODELS_FILE="${MODELS_FILE:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -64,31 +71,37 @@ while [ $# -gt 0 ]; do
     -install-model=*) INSTALL_MODEL="${1#*=}"; shift ;;
     -llm-url) LLM_URL="$2"; shift 2 ;;
     -llm-url=*) LLM_URL="${1#*=}"; shift ;;
+    -models) MODELS_FILE="$2"; shift 2 ;;
+    -models=*) MODELS_FILE="${1#*=}"; shift ;;
     -h|--help)
       cat <<'EOF'
-Usage: install-and-run-multi.sh -config FILE [-install-model MODEL] [-llm-url URL] [-version TAG] [-install-dir DIR]
+Usage: install-and-run-multi.sh -config FILE [-install-model MODEL] [-llm-url URL] [-models FILE] [-version TAG] [-install-dir DIR]
 
 Downloads (or builds) a single box-agent binary, then runs one box-agent
 process per line of FILE, each line being a full box-agent flag set (its
-own -router, -provider, -token, -token-cache, ... - typically the SAME
--backend-model/-llm-url on every line, since this script is for one
-local model registered under several routers, not several different
-models). Blank lines and lines starting with # are ignored. All
-processes run in the foreground; Ctrl-C stops every instance together,
-and if any one instance exits, the rest are stopped too.
+own -router, -provider, -backend-model, -token, -llm-url, -token-cache,
+...). Blank lines and lines starting with # are ignored. All processes
+run in the foreground; Ctrl-C stops every instance together, and if any
+one instance exits, the rest are stopped too.
 
-Pass -install-model MODEL (and -llm-url URL if not the default
-http://localhost:8000) to pull that model via Ollama once, before any
-instance starts - not once per instance. If your instances genuinely
-serve different models, skip this flag and put -install-model on the
-relevant line(s) inside the config file instead.
+Two ways to pre-pull models via Ollama once each, before any instance
+starts (rather than redundantly per instance):
+  -install-model MODEL [-llm-url URL]  - one shared model/server used by
+                                          every instance (default URL:
+                                          http://localhost:8000)
+  -models FILE                         - N distinct models, e.g. 5 models
+                                          on 5 local servers each
+                                          registered to 2 routers (10
+                                          instances, 5 pulls). FILE has
+                                          one "MODEL LLM_URL" pair per
+                                          line; blank/# lines ignored.
 
 No systemd/launchd, no persistence, no root required. For a persistent,
 auto-restarting deployment, run install.sh once per router instead.
 EOF
       exit 0
       ;;
-    *) echo "error: unrecognized argument '$1' (this script's flags are -config/-install-model/-llm-url/-version/-install-dir; per-instance box-agent flags go in the config file, not on the command line)" >&2; exit 1 ;;
+    *) echo "error: unrecognized argument '$1' (this script's flags are -config/-install-model/-llm-url/-models/-version/-install-dir; per-instance box-agent flags go in the config file, not on the command line)" >&2; exit 1 ;;
   esac
 done
 
@@ -146,6 +159,22 @@ fi
 if [ -n "$INSTALL_MODEL" ]; then
   echo "Installing '${INSTALL_MODEL}' via Ollama at ${LLM_URL} (once, shared by all instances)..." >&2
   "$dest" install-model -llm-url "$LLM_URL" "$INSTALL_MODEL"
+fi
+
+if [ -n "$MODELS_FILE" ]; then
+  [ -f "$MODELS_FILE" ] || { echo "error: models file '$MODELS_FILE' not found" >&2; exit 1; }
+  while IFS= read -r mline || [ -n "$mline" ]; do
+    mtrimmed="$(echo "$mline" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -z "$mtrimmed" ] && continue
+    case "$mtrimmed" in \#*) continue ;; esac
+    read -r m_model m_url <<< "$mtrimmed"
+    if [ -z "$m_model" ] || [ -z "$m_url" ]; then
+      echo "error: bad line in '$MODELS_FILE' (expected 'MODEL LLM_URL'): $mtrimmed" >&2
+      exit 1
+    fi
+    echo "Installing '${m_model}' via Ollama at ${m_url}..." >&2
+    "$dest" install-model -llm-url "$m_url" "$m_model"
+  done < "$MODELS_FILE"
 fi
 
 # Parse the config file into one argv array per instance, honoring quotes

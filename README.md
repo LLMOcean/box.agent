@@ -190,6 +190,14 @@ CONF
 bash install-and-run-multi.sh -config routers.conf -install-model "your-model-id"
 ```
 
+For **N genuinely different models** on one host (e.g. 5 local models each
+registered to 2 routers — 10 instances but only 5 distinct pulls), use
+`-models FILE` instead of `-install-model`/`-llm-url`: a file with one
+`MODEL LLM_URL` pair per line, each pulled via Ollama exactly once before
+any instance starts. Pair it with a `-config` file containing all 10
+lines (one per model × router combination). Run the script with `-h` for
+the exact format.
+
 (Needs the config file on disk first, so unlike the single-router script
 it can't be run as one `curl | bash` line — see the script's `-h` for
 details.)
