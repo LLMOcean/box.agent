@@ -49,16 +49,20 @@ any of them explicitly to override, same as any other box-agent flag.
 `-provider`/`-token`/`-backend-model` are the three that are always
 required, though.)
 
-To connect to **multiple routers at once**, run multiple box-agent
-processes — one per router, each with its own `-router`/`-provider`/
-`-token`/`-llm-url`/`-token-cache` (box-agent only ever dials one router
-per process — see the [Deployment](../README.md#deployment) section of
-the main README). Doing that by hand is just N separate invocations of
-the command above with different flags;
+To register one local model under **multiple routers at once**, run
+multiple box-agent processes — one per router, each with its own
+`-router`/`-provider`/`-token`/`-token-cache`, but typically the SAME
+`-backend-model`/`-llm-url` across all of them (box-agent only ever
+dials one router per process — see the
+[Deployment](../README.md#deployment) section of the main README).
+Doing that by hand is just N separate invocations of the command above
+with different flags;
 [`deploy/install-and-run-multi.sh`](../deploy/install-and-run-multi.sh)
 automates it — one shared binary download, one process launched per line
 of a config file you provide, and Ctrl-C (or any instance exiting) stops
-them all together. Run it with `-h` for the config file format.
+them all together. Its own `-install-model` flag pulls the shared model
+via Ollama once, before any instance starts, rather than once per
+instance. Run it with `-h` for the config file format.
 
 Set `VERSION=v1.1.2` (env var) to pin a specific release instead of
 `latest`.

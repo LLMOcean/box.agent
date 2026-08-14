@@ -2,8 +2,10 @@
 # Multi-router variant of install-and-run.sh: downloads (or builds) a
 # single box-agent binary, then launches one box-agent PROCESS PER LINE
 # of an instances file, each connected to its own -router (and its own
-# -provider/-token/-llm-url/-backend-model/-token-cache, since box-agent
-# itself only ever dials one router per process - see deploy/install.sh's
+# -provider/-token/-token-cache; typically the SAME -backend-model and
+# -llm-url across all of them, since this is one local model registered
+# under multiple routers, not a different model per router - box-agent
+# itself only ever dials one router per process, see deploy/install.sh's
 # comments and docs/USAGE.md). All instances run in the foreground of
 # this script; Ctrl-C (or any instance exiting) stops all of them.
 # Nothing persists across reboots - for that, run install.sh once per
@@ -15,23 +17,31 @@
 #   cat > routers.conf <<'CONF'
 #   # one box-agent instance per line - full flag set, same syntax as
 #   # box-agent itself (see docs/USAGE.md). Blank lines and lines
-#   # starting with # are ignored.
-#   -router wss://llm.eu.greenference.com -provider yourns/model-a -backend-model "model-a-id" -token "$EU_TOKEN"    -llm-url http://localhost:8000 -token-cache ./token-eu
-#   -router wss://llm.na.greenference.com -provider yourns/model-b -backend-model "model-b-id" -token "$NA_TOKEN"    -llm-url http://localhost:8001 -token-cache ./token-na
+#   # starting with # are ignored. Same -backend-model/-llm-url on every
+#   # line here since it's one local model, registered under two routers.
+#   -router wss://llm.eu.greenference.com -provider yourns/your-model -backend-model "your-model-id" -token "$EU_TOKEN" -llm-url http://localhost:8000
+#   -router wss://llm.na.greenference.com -provider yourns/your-model -backend-model "your-model-id" -token "$NA_TOKEN" -llm-url http://localhost:8000
 #   CONF
-#   bash install-and-run-multi.sh -config routers.conf
+#   bash install-and-run-multi.sh -config routers.conf -install-model "your-model-id"
 #
 # Note the config file is read locally, so (unlike install-and-run.sh)
 # this script can't be run as a single `curl | bash` one-liner - fetch it
 # first, write your routers.conf, then run it.
 #
-# Add -install-model to a line to have that instance pull its own
-# -backend-model via Ollama (at its own -llm-url) before starting.
-#
 # Env vars / flags (installer-only):
 #   -version (VERSION)         - release tag to install (default: latest)
 #   -install-dir (INSTALL_DIR) - where to place the binary (default: current directory)
 #   -config (CONFIG)           - instances file, one box-agent flag set per line (required)
+#   -install-model (INSTALL_MODEL) - pull this model via Ollama (at -llm-url)
+#                               once, before starting any instance - for the
+#                               common case of one shared local model across
+#                               all routers. Runs once, not once per line -
+#                               if instances use genuinely different models,
+#                               skip this and put -install-model on the
+#                               relevant box-agent line(s) in the config
+#                               file instead.
+#   -llm-url (LLM_URL)         - where to pull -install-model, if given
+#                               (default: http://localhost:8000)
 
 set -euo pipefail
 
@@ -39,6 +49,8 @@ REPO="LLMOcean/box.agent"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-.}"
 CONFIG="${CONFIG:-}"
+INSTALL_MODEL="${INSTALL_MODEL:-}"
+LLM_URL="${LLM_URL:-http://localhost:8000}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,23 +60,35 @@ while [ $# -gt 0 ]; do
     -install-dir=*) INSTALL_DIR="${1#*=}"; shift ;;
     -config) CONFIG="$2"; shift 2 ;;
     -config=*) CONFIG="${1#*=}"; shift ;;
+    -install-model) INSTALL_MODEL="$2"; shift 2 ;;
+    -install-model=*) INSTALL_MODEL="${1#*=}"; shift ;;
+    -llm-url) LLM_URL="$2"; shift 2 ;;
+    -llm-url=*) LLM_URL="${1#*=}"; shift ;;
     -h|--help)
       cat <<'EOF'
-Usage: install-and-run-multi.sh -config FILE [-version TAG] [-install-dir DIR]
+Usage: install-and-run-multi.sh -config FILE [-install-model MODEL] [-llm-url URL] [-version TAG] [-install-dir DIR]
 
 Downloads (or builds) a single box-agent binary, then runs one box-agent
 process per line of FILE, each line being a full box-agent flag set (its
-own -router, -provider, -backend-model, -token, -llm-url, -token-cache,
-...). Blank lines and lines starting with # are ignored. All processes
-run in the foreground; Ctrl-C stops every instance together, and if any
-one instance exits, the rest are stopped too.
+own -router, -provider, -token, -token-cache, ... - typically the SAME
+-backend-model/-llm-url on every line, since this script is for one
+local model registered under several routers, not several different
+models). Blank lines and lines starting with # are ignored. All
+processes run in the foreground; Ctrl-C stops every instance together,
+and if any one instance exits, the rest are stopped too.
+
+Pass -install-model MODEL (and -llm-url URL if not the default
+http://localhost:8000) to pull that model via Ollama once, before any
+instance starts - not once per instance. If your instances genuinely
+serve different models, skip this flag and put -install-model on the
+relevant line(s) inside the config file instead.
 
 No systemd/launchd, no persistence, no root required. For a persistent,
 auto-restarting deployment, run install.sh once per router instead.
 EOF
       exit 0
       ;;
-    *) echo "error: unrecognized argument '$1' (this script's flags are -config/-version/-install-dir; per-instance box-agent flags go in the config file, not on the command line)" >&2; exit 1 ;;
+    *) echo "error: unrecognized argument '$1' (this script's flags are -config/-install-model/-llm-url/-version/-install-dir; per-instance box-agent flags go in the config file, not on the command line)" >&2; exit 1 ;;
   esac
 done
 
@@ -119,6 +143,11 @@ else
   rm -rf "$src_dir"
 fi
 
+if [ -n "$INSTALL_MODEL" ]; then
+  echo "Installing '${INSTALL_MODEL}' via Ollama at ${LLM_URL} (once, shared by all instances)..." >&2
+  "$dest" install-model -llm-url "$LLM_URL" "$INSTALL_MODEL"
+fi
+
 # Parse the config file into one argv array per instance, honoring quotes
 # and $VAR/${VAR} expansion (so tokens can be kept out of the file itself)
 # the same way a shell would, without eval'ing arbitrary shell syntax.
@@ -138,7 +167,10 @@ if [ "${#instance_lines[@]}" -eq 0 ]; then
 fi
 
 pids=()
+cleaned_up=0
 cleanup() {
+  [ "$cleaned_up" = 1 ] && return
+  cleaned_up=1
   echo "Stopping all ${#pids[@]} box-agent instance(s)..." >&2
   for pid in "${pids[@]}"; do
     kill "$pid" 2>/dev/null || true

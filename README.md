@@ -170,23 +170,24 @@ curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/inst
 ```
 
 **Multiple routers at once** — box-agent only ever dials one `-router` per
-process, so connecting to several routers means running several instances.
-[`deploy/install-and-run-multi.sh`](deploy/install-and-run-multi.sh)
+process, so registering one local model under several routers means
+running several instances. [`deploy/install-and-run-multi.sh`](deploy/install-and-run-multi.sh)
 downloads one shared binary and launches one process per line of a config
-file you provide (each line its own full flag set — `-router`, `-provider`,
-`-token`, `-llm-url`, ...); Ctrl-C, or any instance exiting, stops them all
-together. Add `-install-model` to a line to have that instance pull its
-own `-backend-model` via Ollama (at its own `-llm-url`) before starting,
-same as the single-router script above:
+file you provide — typically the same `-backend-model`/`-llm-url` on
+every line (one model, several router registrations), differing only in
+`-router`/`-provider`/`-token`. Ctrl-C, or any instance exiting, stops
+them all together. Pass `-install-model` to the script itself (not
+inside the config file) to pull the model via Ollama once, before any
+instance starts, rather than once per instance:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run-multi.sh \
   -o install-and-run-multi.sh
 cat > routers.conf <<'CONF'
--router wss://llm.eu.greenference.com -provider yourns/model-a -backend-model "model-a-id" -token "$EU_TOKEN" -llm-url http://localhost:8000 -install-model
--router wss://llm.na.greenference.com -provider yourns/model-b -backend-model "model-b-id" -token "$NA_TOKEN" -llm-url http://localhost:8001 -install-model
+-router wss://llm.eu.greenference.com -provider yourns/your-model -backend-model "your-model-id" -token "$EU_TOKEN" -llm-url http://localhost:8000
+-router wss://llm.na.greenference.com -provider yourns/your-model -backend-model "your-model-id" -token "$NA_TOKEN" -llm-url http://localhost:8000
 CONF
-bash install-and-run-multi.sh -config routers.conf
+bash install-and-run-multi.sh -config routers.conf -install-model "your-model-id"
 ```
 
 (Needs the config file on disk first, so unlike the single-router script
