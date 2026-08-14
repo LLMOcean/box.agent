@@ -175,14 +175,16 @@ process, so connecting to several routers means running several instances.
 downloads one shared binary and launches one process per line of a config
 file you provide (each line its own full flag set — `-router`, `-provider`,
 `-token`, `-llm-url`, ...); Ctrl-C, or any instance exiting, stops them all
-together:
+together. Add `-install-model` to a line to have that instance pull its
+own `-backend-model` via Ollama (at its own `-llm-url`) before starting,
+same as the single-router script above:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-and-run-multi.sh \
   -o install-and-run-multi.sh
 cat > routers.conf <<'CONF'
--router wss://llm.eu.greenference.com -provider yourns/model-a -backend-model "model-a-id" -token "$EU_TOKEN" -llm-url http://localhost:8000
--router wss://llm.na.greenference.com -provider yourns/model-b -backend-model "model-b-id" -token "$NA_TOKEN" -llm-url http://localhost:8001
+-router wss://llm.eu.greenference.com -provider yourns/model-a -backend-model "model-a-id" -token "$EU_TOKEN" -llm-url http://localhost:8000 -install-model
+-router wss://llm.na.greenference.com -provider yourns/model-b -backend-model "model-b-id" -token "$NA_TOKEN" -llm-url http://localhost:8001 -install-model
 CONF
 bash install-and-run-multi.sh -config routers.conf
 ```

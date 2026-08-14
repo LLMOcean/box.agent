@@ -25,6 +25,9 @@
 # this script can't be run as a single `curl | bash` one-liner - fetch it
 # first, write your routers.conf, then run it.
 #
+# Add -install-model to a line to have that instance pull its own
+# -backend-model via Ollama (at its own -llm-url) before starting.
+#
 # Env vars / flags (installer-only):
 #   -version (VERSION)         - release tag to install (default: latest)
 #   -install-dir (INSTALL_DIR) - where to place the binary (default: current directory)
