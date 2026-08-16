@@ -84,6 +84,29 @@ Unlike running separate processes against independent backends, this does
 same work either way. Leave it at the default of `1` unless you're
 specifically testing that hypothesis.
 
+### Reporting model metadata at registration
+
+`-context-length` and `-quantization` are usually auto-detected (see
+[Behavior](#behavior) below) and don't need to be passed by hand, but you
+can report them explicitly — along with pricing and visibility — if you'd
+rather not rely on detection, or need to override what it finds. There's no
+separate flag for the Hugging Face repo id: it's derived from
+`-backend-model` itself, so using the model's real Hugging Face repo id
+there (as vLLM already expects) is enough:
+
+```
+./box-agent \
+  -provider oss-qwen \
+  -token "$AGENT_TOKEN" \
+  -llm-url http://localhost:8001 \
+  -backend-model "tcclaviger/Qwen3.6-40B-A3B-Instruct-FP8" \
+  -context-length 131072 \
+  -quantization "fp8" \
+  -is-public=true \
+  -input-per-million 0.20 \
+  -output-per-million 0.60
+```
+
 ## Installing a model
 
 Two one-shot subcommands manage models on the local Ollama server directly
