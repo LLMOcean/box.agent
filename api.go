@@ -30,6 +30,9 @@ type registerModelRequest struct {
 	IsPublic         bool    `json:"is_public"`
 	InputPerMillion  float64 `json:"input_per_million,omitempty"`
 	OutputPerMillion float64 `json:"output_per_million,omitempty"`
+	ContextLength    int     `json:"context_length,omitempty"`
+	Quantization     string  `json:"quantization,omitempty"`
+	HuggingFaceID    string  `json:"hugging_face_id,omitempty"`
 }
 
 // AgentIdentity is the orchestrator's per-token identity for this box-agent
@@ -186,19 +189,26 @@ func ensureAgentToken(provisioner *apiClient, cachePath, providerName, modelName
 // creating it server-side if it doesn't exist yet - see
 // AgentInstancesService::registerModel() in the management API.
 //
-// isPublic, inputPerMillion, and outputPerMillion are sent alongside the
-// request but, as of this writing, AgentInstancesService::registerModel()
-// only reads model/provider/name from it - these three are accepted here
-// so box-agent is ready as soon as that endpoint is updated to honor them
-// (it currently creates provider/model rows via a raw Eloquent create that
-// ignores unknown fields, so today these are silently dropped server-side).
-func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPerMillion, outputPerMillion float64) error {
+// isPublic, inputPerMillion, outputPerMillion, contextLength, quantization,
+// and huggingFaceID are sent alongside the request but, as of this writing,
+// AgentInstancesService::registerModel() only reads model/provider/name
+// from it - these are accepted here so box-agent is ready as soon as that
+// endpoint is updated to honor them (it currently creates provider/model
+// rows via a raw Eloquent create that ignores unknown fields, so today
+// these are silently dropped server-side). contextLength/quantization are
+// usually auto-detected (see ollamaModelInfo in ollama.go) rather than
+// operator-supplied; huggingFaceID is derived from the model name itself
+// (see huggingFaceRepoID) and is "" when it can't be determined.
+func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPerMillion, outputPerMillion float64, contextLength int, quantization, huggingFaceID string) error {
 	payload, err := json.Marshal(registerModelRequest{
 		Model:            model,
 		Provider:         provider,
 		IsPublic:         isPublic,
 		InputPerMillion:  inputPerMillion,
 		OutputPerMillion: outputPerMillion,
+		ContextLength:    contextLength,
+		Quantization:     quantization,
+		HuggingFaceID:    huggingFaceID,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)

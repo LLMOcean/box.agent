@@ -103,6 +103,20 @@ codes, and a scripted rollout example.
   (`-api-url`/`-api-token`), so it can keep track of which model is running
   behind each agent instance's token. Registration happens once at startup,
   before the router connect loop; a failure here is fatal.
+- Before registering, tries to auto-detect the model's context length and
+  quantization by querying a running Ollama server's `/api/show` (a no-op
+  against any other backend, e.g. vLLM, which has no such endpoint) -
+  `-context-length`/`-quantization` still win if set explicitly, detection
+  only fills in what's left unreported. It also derives a Hugging Face repo
+  id from `-backend-model` itself, when the name carries one: Ollama's
+  `hf.co/<repo>[:<quant tag>]` direct-pull form, or vLLM's convention of the
+  bare repo id (`tcclaviger/Qwen3.6-40B-...`) as `-backend-model`. All three
+  are sent as `context_length`/`quantization`/`hugging_face_id` on
+  registration alongside the existing fields - as of this writing the
+  management API only reads `model`/`provider`/`name` from that request and
+  silently drops the rest, same as `-is-public`/`-input-per-million`/
+  `-output-per-million` already did, so this is future-ready rather than
+  live end-to-end yet.
 - Reconnects automatically (fixed 5s delay) if the connection to the router
   drops.
 - Answers the router's WebSocket pings so the connection isn't reaped as

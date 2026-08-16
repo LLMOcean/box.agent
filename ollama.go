@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	json "github.com/goccy/go-json"
 	"net/http"
 	"os"
 	"os/exec"
@@ -68,6 +70,84 @@ func ollamaServerUp(llmURL string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// ollamaShowResponse is the subset of Ollama's POST /api/show response
+// (https://github.com/ollama/ollama/blob/main/docs/api.md#show-model-information)
+// this agent reads to auto-detect capability info it would otherwise need
+// an operator to pass by hand via -context-length/-quantization.
+// ModelInfo's keys are architecture-prefixed (e.g. "llama.context_length",
+// "qwen2.context_length") rather than one fixed name, so it's decoded as a
+// raw map and scanned for the matching suffix instead of a fixed field.
+type ollamaShowResponse struct {
+	Details struct {
+		QuantizationLevel string `json:"quantization_level"`
+	} `json:"details"`
+	ModelInfo map[string]json.RawMessage `json:"model_info"`
+}
+
+// ollamaModelInfo asks a running Ollama server what it knows about model's
+// context length and quantization, so callers can self-report accurate
+// capabilities without an operator having to pass -context-length/
+// -quantization by hand. Returns zero values (never an error) if the server
+// isn't reachable, doesn't recognize model, or isn't Ollama at all (e.g. a
+// bare vLLM backend, which has no /api/show) - callers should treat that as
+// "unknown" and fall back to whatever flags were given, exactly as if
+// auto-detection didn't exist.
+func ollamaModelInfo(llmURL, model string) (contextLength int, quantization string) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	payload, err := json.Marshal(map[string]string{"model": model})
+	if err != nil {
+		return 0, ""
+	}
+	resp, err := client.Post(ollamaBaseURL(llmURL)+"/api/show", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return 0, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, ""
+	}
+
+	var show ollamaShowResponse
+	if err := json.NewDecoder(resp.Body).Decode(&show); err != nil {
+		return 0, ""
+	}
+
+	quantization = show.Details.QuantizationLevel
+	for key, raw := range show.ModelInfo {
+		if !strings.HasSuffix(key, ".context_length") {
+			continue
+		}
+		var n int
+		if err := json.Unmarshal(raw, &n); err == nil {
+			contextLength = n
+		}
+		break
+	}
+	return contextLength, quantization
+}
+
+// huggingFaceRepoID extracts a Hugging Face repo id from model, when the
+// model name itself carries one - the only source this agent has for it,
+// since neither Ollama's /api/show nor vLLM's API reports it separately.
+// Two conventions in play, both already documented elsewhere in this repo:
+// Ollama's "hf.co/<repo>[:<quant tag>]" direct-pull form (see pullModel
+// above), and vLLM's -backend-model convention of the bare repo id itself,
+// e.g. "tcclaviger/Qwen3.6-40B-..." (see the -backend-model flag docs).
+// Returns "" for a plain Ollama library name (e.g. "llama3", "llama3:8b"),
+// which isn't a Hugging Face repo at all.
+func huggingFaceRepoID(model string) string {
+	repo := model
+	if strings.HasPrefix(strings.ToLower(repo), "hf.co/") {
+		repo = repo[len("hf.co/"):]
+	} else if !strings.Contains(repo, "/") {
+		return ""
+	}
+	if idx := strings.LastIndex(repo, ":"); idx != -1 {
+		repo = repo[:idx]
+	}
+	return repo
 }
 
 // ensureOllamaRunning starts `ollama serve` in the background if no server

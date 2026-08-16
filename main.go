@@ -180,15 +180,36 @@ func runAgent() {
 	}
 	log.Printf("provider found: instance_name=%s", identity.InstanceName)
 
-	if err := api.registerModel(model, apiProviderName, *isPublic, *inputPerMillion, *outputPerMillion); err != nil {
+	// Auto-detect what -context-length/-quantization would otherwise require
+	// an operator to pass by hand: ollamaModelInfo queries a running
+	// Ollama's /api/show (a no-op returning zero values against any other
+	// backend, e.g. vLLM, which has no such endpoint). Explicit flag values
+	// always win; detection only fills in what's left unreported. hugging
+	// face id has no flag at all - it's derived purely from -backend-model
+	// (see huggingFaceRepoID).
+	effectiveContextLength := *contextLength
+	effectiveQuantization := *quantization
+	if effectiveContextLength == 0 || effectiveQuantization == "" {
+		detectedContextLength, detectedQuantization := ollamaModelInfo(*llmURL, model)
+		if effectiveContextLength == 0 {
+			effectiveContextLength = detectedContextLength
+		}
+		if effectiveQuantization == "" {
+			effectiveQuantization = detectedQuantization
+		}
+	}
+	hfRepoID := huggingFaceRepoID(model)
+	log.Printf("model info: context_length=%d quantization=%q hugging_face_id=%q", effectiveContextLength, effectiveQuantization, hfRepoID)
+
+	if err := api.registerModel(model, apiProviderName, *isPublic, *inputPerMillion, *outputPerMillion, effectiveContextLength, effectiveQuantization, hfRepoID); err != nil {
 		log.Fatalf("register with API: %v", err)
 	}
 	log.Printf("registered with API: model=%s provider=%s is_public=%v", model, apiProviderName, *isPublic)
 
 	caps := &Capabilities{
-		ContextLength:     *contextLength,
+		ContextLength:     effectiveContextLength,
 		MaxOutputLength:   *maxOutputLength,
-		Quantization:      *quantization,
+		Quantization:      effectiveQuantization,
 		InputModalities:   splitCSV(*inputModalities),
 		OutputModalities:  splitCSV(*outputModalities),
 		SupportedFeatures: splitCSV(*supportedFeatures),
