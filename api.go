@@ -190,15 +190,16 @@ func ensureAgentToken(provisioner *apiClient, cachePath, providerName, modelName
 // AgentInstancesService::registerModel() in the management API.
 //
 // isPublic, inputPerMillion, outputPerMillion, contextLength, quantization,
-// and huggingFaceID are sent alongside the request but, as of this writing,
-// AgentInstancesService::registerModel() only reads model/provider/name
-// from it - these are accepted here so box-agent is ready as soon as that
-// endpoint is updated to honor them (it currently creates provider/model
-// rows via a raw Eloquent create that ignores unknown fields, so today
-// these are silently dropped server-side). contextLength/quantization are
-// usually auto-detected (see ollamaModelInfo in ollama.go) rather than
+// and huggingFaceID are sent alongside the request and persisted server-side
+// onto the llmocean_provider_models row (max_context_tokens/quantization/
+// hugging_face_id columns) - only whichever of these a given call actually
+// sets is written, so a partial report never clobbers previously-known
+// metadata with zero/empty. contextLength/quantization are usually
+// auto-detected (see ollamaModelInfo/llmBackend.modelInfo) rather than
 // operator-supplied; huggingFaceID is derived from the model name itself
-// (see huggingFaceRepoID) and is "" when it can't be determined.
+// (see huggingFaceRepoID) and is "" when it can't be determined - a zero/""
+// value here is simply omitted from the request (see registerModelRequest's
+// omitempty tags) rather than sent and overwriting a previously-known value.
 func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPerMillion, outputPerMillion float64, contextLength int, quantization, huggingFaceID string) error {
 	payload, err := json.Marshal(registerModelRequest{
 		Model:            model,
