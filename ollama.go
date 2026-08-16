@@ -141,11 +141,12 @@ func huggingFaceRepoID(model string) string {
 	repo := model
 	if strings.HasPrefix(strings.ToLower(repo), "hf.co/") {
 		repo = repo[len("hf.co/"):]
-	} else if !strings.Contains(repo, "/") {
-		return ""
 	}
 	if idx := strings.LastIndex(repo, ":"); idx != -1 {
 		repo = repo[:idx]
+	}
+	if !looksLikeHuggingFaceRepoID(repo) {
+		return ""
 	}
 	return repo
 }

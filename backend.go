@@ -53,6 +53,84 @@ func (b *llmBackend) effectiveModel(requested string) string {
 	return requested
 }
 
+// openaiModelCard is the subset of vLLM's GET /v1/models entry this agent
+// reads for auto-detection (see vLLM's ModelCard in
+// entrypoints/openai/models/engine/protocol.go: id/root/max_model_len).
+// Root is the base model path vLLM was launched with - almost always the
+// literal Hugging Face repo id, per -backend-model's own documented
+// convention. Other OpenAI-compatible servers (Ollama included) either omit
+// these fields entirely or don't answer GET /v1/models with useful values
+// here at all, so this is best-effort and only meaningfully populated
+// against vLLM.
+type openaiModelCard struct {
+	ID          string `json:"id"`
+	Root        string `json:"root"`
+	MaxModelLen int    `json:"max_model_len"`
+}
+
+type openaiModelList struct {
+	Data []openaiModelCard `json:"data"`
+}
+
+// looksLikeHuggingFaceRepoID reports whether s has the shape of a Hugging
+// Face repo id ("org/repo") rather than, say, a local filesystem path
+// (vLLM's -model can be either) or some other opaque server-assigned id.
+func looksLikeHuggingFaceRepoID(s string) bool {
+	if s == "" || strings.HasPrefix(s, "/") || strings.HasPrefix(s, ".") {
+		return false
+	}
+	parts := strings.Split(s, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+}
+
+// modelInfo queries the generic OpenAI-compatible GET /v1/models endpoint
+// for context length and a Hugging Face repo id, as a fallback for backends
+// that aren't Ollama (see ollamaModelInfo/huggingFaceRepoID in ollama.go for
+// the Ollama-specific and flag-derived paths, tried first). Matches by id
+// when there's more than one entry, else falls back to the sole entry (some
+// vLLM versions don't echo back -served-model-name in this list). Returns
+// zero values, never an error, on any failure - same "unknown, caller falls
+// back further" contract as ollamaModelInfo.
+func (b *llmBackend) modelInfo(model string) (contextLength int, hfID string) {
+	req, err := http.NewRequest(http.MethodGet, b.baseURL+"/v1/models", nil)
+	if err != nil {
+		return 0, ""
+	}
+	if b.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+b.apiKey)
+	}
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return 0, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, ""
+	}
+
+	var list openaiModelList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil || len(list.Data) == 0 {
+		return 0, ""
+	}
+
+	card := list.Data[0]
+	for _, c := range list.Data {
+		if c.ID == model {
+			card = c
+			break
+		}
+	}
+
+	contextLength = card.MaxModelLen
+	if looksLikeHuggingFaceRepoID(card.Root) {
+		hfID = card.Root
+	} else if looksLikeHuggingFaceRepoID(card.ID) {
+		hfID = card.ID
+	}
+	return contextLength, hfID
+}
+
 type openaiMessage struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`

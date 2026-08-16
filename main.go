@@ -181,24 +181,37 @@ func runAgent() {
 	log.Printf("provider found: instance_name=%s", identity.InstanceName)
 
 	// Auto-detect what -context-length/-quantization would otherwise require
-	// an operator to pass by hand: ollamaModelInfo queries a running
-	// Ollama's /api/show (a no-op returning zero values against any other
-	// backend, e.g. vLLM, which has no such endpoint). Explicit flag values
-	// always win; detection only fills in what's left unreported. hugging
-	// face id has no flag at all - it's derived purely from -backend-model
-	// (see huggingFaceRepoID).
+	// an operator to pass by hand. Tried in order, each only filling in what
+	// the previous step left unreported - explicit flag values always win:
+	//  1. ollamaModelInfo queries a running Ollama's /api/show (a no-op
+	//     against any other backend, e.g. vLLM, which has no such endpoint).
+	//  2. huggingFaceRepoID derives an id straight from -backend-model
+	//     itself (Ollama's "hf.co/<repo>" or vLLM's bare-repo-id convention).
+	//  3. backend.modelInfo asks the backend's own GET /v1/models - useful
+	//     against vLLM specifically, whose response includes max_model_len
+	//     and root (the launched model path, normally the same Hugging Face
+	//     repo id as -backend-model, but the backend's own word for it
+	//     rather than a guess from the flag).
 	effectiveContextLength := *contextLength
 	effectiveQuantization := *quantization
-	if effectiveContextLength == 0 || effectiveQuantization == "" {
-		detectedContextLength, detectedQuantization := ollamaModelInfo(*llmURL, model)
+	detectedContextLength, detectedQuantization := ollamaModelInfo(*llmURL, model)
+	if effectiveContextLength == 0 {
+		effectiveContextLength = detectedContextLength
+	}
+	if effectiveQuantization == "" {
+		effectiveQuantization = detectedQuantization
+	}
+
+	hfRepoID := huggingFaceRepoID(model)
+	if effectiveContextLength == 0 || hfRepoID == "" {
+		genericContextLength, genericHFID := backend.modelInfo(model)
 		if effectiveContextLength == 0 {
-			effectiveContextLength = detectedContextLength
+			effectiveContextLength = genericContextLength
 		}
-		if effectiveQuantization == "" {
-			effectiveQuantization = detectedQuantization
+		if hfRepoID == "" {
+			hfRepoID = genericHFID
 		}
 	}
-	hfRepoID := huggingFaceRepoID(model)
 	log.Printf("model info: context_length=%d quantization=%q hugging_face_id=%q", effectiveContextLength, effectiveQuantization, hfRepoID)
 
 	if err := api.registerModel(model, apiProviderName, *isPublic, *inputPerMillion, *outputPerMillion, effectiveContextLength, effectiveQuantization, hfRepoID); err != nil {
