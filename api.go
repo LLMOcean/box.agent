@@ -235,3 +235,40 @@ func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPe
 	}
 	return nil
 }
+
+type reportHealthRequest struct {
+	Healthy bool   `json:"healthy"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// reportHealth tells the API backend whether this instance's local LLM
+// backend is currently reachable - see monitorBackendHealth in backend.go,
+// the only caller, which reports a transition (not every probe) so a
+// healthy steady state never spams this endpoint. detail is the probe's raw
+// error text on an unhealthy report, empty on a healthy one.
+func (a *apiClient) reportHealth(healthy bool, detail string) error {
+	payload, err := json.Marshal(reportHealthRequest{Healthy: healthy, Detail: detail})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, a.baseURL+"/llmocean/agent-instances/report-health", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.token)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("api backend error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

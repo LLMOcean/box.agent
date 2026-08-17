@@ -6,8 +6,10 @@ import (
 	"fmt"
 	json "github.com/goccy/go-json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // backendError classifies a non-200 response from the local LLM backend with
@@ -81,6 +83,74 @@ func looksLikeHuggingFaceRepoID(s string) bool {
 	}
 	parts := strings.Split(s, "/")
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+}
+
+// healthCheck probes the local backend with a cheap GET /v1/models, returning
+// whatever error the HTTP client itself produced (refused/timeout/DNS -
+// exactly the "Cannot connect to host" case that shows up as a 502 three
+// hops downstream once a real chat request finally hits it). Any actual HTTP
+// response, even a non-200 one, means the process is up and answering, so
+// it's treated as healthy here - this is a liveness probe, not a
+// correctness check.
+func (b *llmBackend) healthCheck() error {
+	req, err := http.NewRequest(http.MethodGet, b.baseURL+"/v1/models", nil)
+	if err != nil {
+		return err
+	}
+	if b.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+b.apiKey)
+	}
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// monitorBackendHealth polls backend.healthCheck on an interval for the
+// lifetime of the process and reports only state transitions (not every
+// tick) to the management API via api.reportHealth - so a healthy steady
+// state never spams the API, and an outage is reported once it's flagged,
+// not once per failed probe. consecutiveFailThreshold debounces a single
+// blip (a GC pause, a slow reload) the same way intelligence-workers'
+// transientBackoff debounces a single failed job - only a run of failures
+// is treated as "actually down."
+func monitorBackendHealth(backend *llmBackend, api *apiClient) {
+	const (
+		checkInterval            = 20 * time.Second
+		consecutiveFailThreshold = 3
+	)
+
+	consecutiveFails := 0
+	healthy := true
+
+	for {
+		time.Sleep(checkInterval)
+
+		err := backend.healthCheck()
+		if err == nil {
+			consecutiveFails = 0
+			if !healthy {
+				log.Printf("local LLM backend recovered — reporting healthy")
+				if reportErr := api.reportHealth(true, ""); reportErr != nil {
+					log.Printf("failed to report backend health recovery: %v", reportErr)
+				}
+				healthy = true
+			}
+			continue
+		}
+
+		consecutiveFails++
+		if healthy && consecutiveFails >= consecutiveFailThreshold {
+			log.Printf("local LLM backend unreachable (%d consecutive checks): %v — reporting unhealthy", consecutiveFails, err)
+			if reportErr := api.reportHealth(false, err.Error()); reportErr != nil {
+				log.Printf("failed to report backend health outage: %v", reportErr)
+			}
+			healthy = false
+		}
+	}
 }
 
 // modelInfo queries the generic OpenAI-compatible GET /v1/models endpoint

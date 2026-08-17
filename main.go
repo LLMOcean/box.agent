@@ -228,6 +228,11 @@ func runAgent() {
 		SupportedFeatures: splitCSV(*supportedFeatures),
 	}
 
+	// One monitor for the whole process, not per-connection - -llm-url is one
+	// shared local backend regardless of how many router WebSocket
+	// connections (-connections) proxy to it.
+	go monitorBackendHealth(backend, api)
+
 	runConnLoop := func(connIdx int) {
 		for {
 			if err := connectAndServe(connectURL, agentToken, backend, caps); err != nil {
