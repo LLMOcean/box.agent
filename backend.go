@@ -117,10 +117,20 @@ func (b *llmBackend) healthCheck() error {
 // blip (a GC pause, a slow reload) the same way intelligence-workers'
 // transientBackoff debounces a single failed job - only a run of failures
 // is treated as "actually down."
-func monitorBackendHealth(backend *llmBackend, api *apiClient) {
+//
+// vllm, when non-nil (only set under -deploy-vllm, see main.go), is killed
+// once a run of failures crosses the same threshold - box-agent owns that
+// child process (see vllm.go's vllmSupervisor), so unlike a backend started
+// externally, it can actually act on a bad health signal instead of only
+// reporting it. The supervisor's own restart-on-exit loop then relaunches
+// it, exactly as it would after a crash. bootGrace pauses checks afterward
+// so a slow reboot isn't mistaken for a second outage and killed again
+// mid-boot.
+func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervisor) {
 	const (
 		checkInterval            = 20 * time.Second
 		consecutiveFailThreshold = 3
+		bootGrace                = 3 * time.Minute
 	)
 
 	consecutiveFails := 0
@@ -149,6 +159,12 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient) {
 				log.Printf("failed to report backend health outage: %v", reportErr)
 			}
 			healthy = false
+		}
+
+		if vllm != nil && consecutiveFails == consecutiveFailThreshold {
+			vllm.kill()
+			consecutiveFails = 0
+			time.Sleep(bootGrace)
 		}
 	}
 }

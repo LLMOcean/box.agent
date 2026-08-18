@@ -67,6 +67,18 @@ router or a differently-addressed LLM server:
 | `-output-per-million` | — | `0` (unreported) | Output price per million tokens to report at registration. |
 | `-connections` | — | `1` | Number of parallel WebSocket connections this one process opens to the router, all proxying to the same `-llm-url`. See below - almost always leave this at `1`. |
 | `-version` | — | `false` | Print the build version and exit. Compares what's actually running against what's published - a git tag alone doesn't mean a matching GitHub Release with binary assets exists; `install.sh` downloads the latter. `dev` means a local `go build` with no `-ldflags` version stamp. |
+| `-deploy-vllm` | — | `false` | Download `-backend-model` via Hugging Face and boot/supervise it with `vllm serve` bound to `-llm-url`'s port, then auto-restart it on hang or crash — box-agent owns the vLLM process end-to-end. See [Deploying vLLM directly](#deploying-vllm-directly) below. |
+| `-vllm-gpu-util` | — | `0.9` | `vllm serve --gpu-memory-utilization` (only with `-deploy-vllm`). |
+| `-vllm-max-model-len` | — | `0` (vllm's default) | `vllm serve --max-model-len` (only with `-deploy-vllm`). |
+| `-vllm-enable-sleep-mode` | — | `true` | Passes `--enable-sleep-mode` to `vllm serve` (only with `-deploy-vllm`). |
+| `-vllm-enable-auto-tool-choice` | — | `false` | Passes `--enable-auto-tool-choice` — needed for tool/function calling, along with `-vllm-tool-call-parser` (only with `-deploy-vllm`). |
+| `-vllm-tool-call-parser` | — | *(empty)* | `vllm serve --tool-call-parser`, e.g. `hermes`, `llama3_json`, `mistral`, `pythonic` — model-family-specific (only with `-deploy-vllm`). |
+| `-vllm-chat-template` | — | *(empty)* | `vllm serve --chat-template` override path — some families (e.g. Gemma-3's pythonic tool template) need this to support tool calls at all (only with `-deploy-vllm`). |
+| `-vllm-extra-args` | — | *(empty)* | Extra raw arguments appended verbatim to `vllm serve`, whitespace-split (only with `-deploy-vllm`). |
+| `-vllm-hf-token` | `HF_TOKEN` | *(empty)* | Hugging Face token for downloading a gated `-backend-model` (only with `-deploy-vllm`). |
+| `-vllm-hf-home` | `HF_HOME` | *(empty)* | Cache directory for the download and the `vllm serve` child (only with `-deploy-vllm`). |
+| `-vllm-boot-timeout` | — | `15m` | How long to wait for `vllm serve` to answer `GET /v1/models` after starting before giving up (only with `-deploy-vllm`). |
+| `-vllm-log-file` | — | `/var/log/box-agent-vllm.log` | Log file for the `vllm serve` child's stdout/stderr (only with `-deploy-vllm`). |
 
 Run multiple **processes** with the same `-provider`/`-token` (against the
 same or different local LLM servers) for redundancy/load distribution — the
@@ -119,6 +131,37 @@ box-agent delete-model  [-llm-url URL] <model>
 
 See [`docs/MODEL_DEPLOY.md`](docs/MODEL_DEPLOY.md) for requirements, exit
 codes, and a scripted rollout example.
+
+## Deploying vLLM directly
+
+`-install-model` covers Ollama. For vLLM, `-deploy-vllm` has box-agent own
+the whole lifecycle instead of expecting a `vllm serve` process to already
+be running at `-llm-url`: it downloads `-backend-model` from Hugging Face,
+boots `vllm serve` bound to `-llm-url`'s port as a supervised child, waits
+for it to answer before registering with the router, and from then on
+auto-restarts it (kill + relaunch) if the health monitor sees a run of
+failed checks — the same signal that would otherwise only be reported to
+the management API.
+
+```bash
+./box-agent \
+  -provider yourns/your-model \
+  -token "$AGENT_TOKEN" \
+  -llm-url http://localhost:8000 \
+  -backend-model "Qwen/Qwen3-8B-FP8" \
+  -deploy-vllm \
+  -vllm-enable-auto-tool-choice \
+  -vllm-tool-call-parser hermes
+```
+
+Requires `vllm` on `PATH` already (a matching CUDA/driver/torch stack isn't
+something box-agent can safely auto-install). To run more than one model on
+one box, run one box-agent process per model, each with its own `-llm-url`
+port — the same scaling pattern as `-connections`/multiple router
+registrations above, just applied to the vLLM child instead. See the flag
+table above (`-vllm-*`) for tuning `--gpu-memory-utilization`,
+`--max-model-len`, `--enable-sleep-mode`, the tool-call parser/chat
+template, and raw passthrough args.
 
 ## Behavior
 
@@ -294,3 +337,4 @@ server is also containerized on the same host/network.
 - `frame.go` — the wire `Frame`/`Message`/`Usage` types.
 - `benchmark.go` — host/LLM diagnostic snapshot, see [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
 - `ollama.go` — installing/removing models via `ollama`, see [`docs/MODEL_DEPLOY.md`](docs/MODEL_DEPLOY.md).
+- `vllm.go` — downloading, booting, and supervising a `vllm serve` child under `-deploy-vllm`.

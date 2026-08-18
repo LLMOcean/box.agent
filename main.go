@@ -54,6 +54,18 @@ func runAgent() {
 	llmAPIKey := flag.String("llm-api-key", os.Getenv("LLM_API_KEY"), "bearer token for the local LLM server, if it requires one")
 	backendModel := flag.String("backend-model", "", "model name to register and to send to the local LLM backend (required) - e.g. vLLM expects the full repo id it was started with, like \"tcclaviger/Qwen3.6-40B-...\"")
 	installModel := flag.Bool("install-model", false, "pull -backend-model via Ollama (using -llm-url) before starting, if it isn't already installed - equivalent to running \"box-agent install-model\" first, but as one step")
+	deployVLLM := flag.Bool("deploy-vllm", false, "download -backend-model via Hugging Face and boot/supervise it with \"vllm serve\" bound to -llm-url's port before starting, then auto-restart it if it hangs or crashes - box-agent owns the vllm process end-to-end instead of expecting one already running elsewhere. Requires vllm on PATH. Deploy more than one model per box by running one box-agent process per model, each with its own -llm-url port")
+	vllmGPUMemUtil := flag.Float64("vllm-gpu-util", 0.9, "vllm serve --gpu-memory-utilization (only used with -deploy-vllm)")
+	vllmMaxModelLen := flag.Int("vllm-max-model-len", 0, "vllm serve --max-model-len (0 = vllm's own default; only used with -deploy-vllm)")
+	vllmEnableSleepMode := flag.Bool("vllm-enable-sleep-mode", true, "pass --enable-sleep-mode to vllm serve so the backend can later be parked to free VRAM (only used with -deploy-vllm)")
+	vllmEnableAutoToolChoice := flag.Bool("vllm-enable-auto-tool-choice", false, "pass --enable-auto-tool-choice to vllm serve - required for tool/function calling; needs -vllm-tool-call-parser set too (only used with -deploy-vllm)")
+	vllmToolCallParser := flag.String("vllm-tool-call-parser", "", "vllm serve --tool-call-parser, e.g. \"hermes\", \"llama3_json\", \"mistral\", \"pythonic\" - model-family-specific (only used with -deploy-vllm)")
+	vllmChatTemplate := flag.String("vllm-chat-template", "", "vllm serve --chat-template override path, needed by some families (e.g. Gemma-3's pythonic tool template) to support tool calls at all (only used with -deploy-vllm)")
+	vllmExtraArgs := flag.String("vllm-extra-args", "", "additional raw arguments appended verbatim to vllm serve, whitespace-split (only used with -deploy-vllm)")
+	vllmHFToken := flag.String("vllm-hf-token", os.Getenv("HF_TOKEN"), "Hugging Face token for downloading -backend-model, if it's gated (or set HF_TOKEN; only used with -deploy-vllm)")
+	vllmHFHome := flag.String("vllm-hf-home", os.Getenv("HF_HOME"), "HF_HOME cache directory for the download and the vllm serve child (only used with -deploy-vllm)")
+	vllmBootTimeout := flag.Duration("vllm-boot-timeout", 15*time.Minute, "how long to wait for vllm serve to answer GET /v1/models after starting, before giving up (only used with -deploy-vllm)")
+	vllmLogFile := flag.String("vllm-log-file", "/var/log/box-agent-vllm.log", "log file for the vllm serve child's stdout/stderr (only used with -deploy-vllm)")
 	apiURL := flag.String("api-url", "https://api.greenference.com", "base URL of the management API used to register this box-agent and sync its running model")
 	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "bearer token for the management API (or set API_TOKEN); defaults to -token if not set. When -token itself is unset, this must be an IAM/account-level token used to auto-provision an agent instance instead")
 	tokenCache := flag.String("token-cache", "/var/lib/box-agent/token", "local file to cache an auto-provisioned agent token across restarts, so box-agent doesn't provision a new agent instance every run - only used when -token isn't set. Set to empty to disable caching")
@@ -97,6 +109,44 @@ func runAgent() {
 			log.Fatalf("install model: %v", err)
 		}
 		log.Printf("installed %q", *backendModel)
+	}
+
+	var vllmSup *vllmSupervisor
+	if *deployVLLM {
+		if err := ensureVLLMInstalled(); err != nil {
+			log.Fatalf("deploy vllm: %v", err)
+		}
+		vllmPort, err := vllmPortFromURL(*llmURL)
+		if err != nil {
+			log.Fatalf("deploy vllm: %v", err)
+		}
+		if err := downloadModel(*backendModel, *vllmHFToken, *vllmHFHome); err != nil {
+			log.Fatalf("deploy vllm: %v", err)
+		}
+
+		vllmSup = newVLLMSupervisor(vllmConfig{
+			Repo:                 *backendModel,
+			ServedModelName:      *backendModel,
+			Host:                 "127.0.0.1",
+			Port:                 vllmPort,
+			GPUMemUtil:           *vllmGPUMemUtil,
+			MaxModelLen:          *vllmMaxModelLen,
+			EnableSleepMode:      *vllmEnableSleepMode,
+			EnableAutoToolChoice: *vllmEnableAutoToolChoice,
+			ToolCallParser:       *vllmToolCallParser,
+			ChatTemplate:         *vllmChatTemplate,
+			ExtraArgs:            *vllmExtraArgs,
+			HFToken:              *vllmHFToken,
+			HFHome:               *vllmHFHome,
+			LogPath:              *vllmLogFile,
+		})
+		go vllmSup.run()
+
+		log.Printf("waiting up to %s for vllm serve to become ready on :%s", *vllmBootTimeout, vllmPort)
+		if err := waitVLLMReady(strings.TrimSuffix(*llmURL, "/"), *vllmBootTimeout); err != nil {
+			log.Fatalf("deploy vllm: %v", err)
+		}
+		log.Printf("vllm serve ready on :%s", vllmPort)
 	}
 
 	// -token and -api-token are the same value in practice (one
@@ -231,7 +281,7 @@ func runAgent() {
 	// One monitor for the whole process, not per-connection - -llm-url is one
 	// shared local backend regardless of how many router WebSocket
 	// connections (-connections) proxy to it.
-	go monitorBackendHealth(backend, api)
+	go monitorBackendHealth(backend, api, vllmSup)
 
 	runConnLoop := func(connIdx int) {
 		for {
