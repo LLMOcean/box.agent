@@ -60,6 +60,7 @@ func runAgent() {
 	vllmEnableSleepMode := flag.Bool("vllm-enable-sleep-mode", true, "pass --enable-sleep-mode to vllm serve so the backend can later be parked to free VRAM (only used with -deploy-vllm)")
 	vllmEnableAutoToolChoice := flag.Bool("vllm-enable-auto-tool-choice", false, "pass --enable-auto-tool-choice to vllm serve - required for tool/function calling; needs -vllm-tool-call-parser set too (only used with -deploy-vllm)")
 	vllmToolCallParser := flag.String("vllm-tool-call-parser", "", "vllm serve --tool-call-parser, e.g. \"hermes\", \"llama3_json\", \"mistral\", \"pythonic\" - model-family-specific (only used with -deploy-vllm)")
+	vllmReasoningParser := flag.String("vllm-reasoning-parser", "", "vllm serve --reasoning-parser, e.g. \"deepseek_r1\", \"qwen3\" - model-family-specific; without it a reasoning model's internal reasoning leaks into the ordinary content field instead of being separated into reasoning_content (only used with -deploy-vllm)")
 	vllmChatTemplate := flag.String("vllm-chat-template", "", "vllm serve --chat-template override path, needed by some families (e.g. Gemma-3's pythonic tool template) to support tool calls at all (only used with -deploy-vllm)")
 	vllmExtraArgs := flag.String("vllm-extra-args", "", "additional raw arguments appended verbatim to vllm serve, whitespace-split (only used with -deploy-vllm)")
 	vllmHFToken := flag.String("vllm-hf-token", os.Getenv("HF_TOKEN"), "Hugging Face token for downloading -backend-model, if it's gated (or set HF_TOKEN; only used with -deploy-vllm)")
@@ -145,6 +146,7 @@ func runAgent() {
 			EnableSleepMode:      *vllmEnableSleepMode,
 			EnableAutoToolChoice: *vllmEnableAutoToolChoice,
 			ToolCallParser:       *vllmToolCallParser,
+			ReasoningParser:      *vllmReasoningParser,
 			ChatTemplate:         *vllmChatTemplate,
 			ExtraArgs:            *vllmExtraArgs,
 			HFToken:              *vllmHFToken,

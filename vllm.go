@@ -29,6 +29,7 @@ type vllmConfig struct {
 	EnableSleepMode      bool
 	EnableAutoToolChoice bool
 	ToolCallParser       string
+	ReasoningParser      string
 	ChatTemplate         string
 	ExtraArgs            string
 	HFToken              string
@@ -120,6 +121,9 @@ func (c vllmConfig) args() []string {
 	}
 	if c.ToolCallParser != "" {
 		args = append(args, "--tool-call-parser", c.ToolCallParser)
+	}
+	if c.ReasoningParser != "" {
+		args = append(args, "--reasoning-parser", c.ReasoningParser)
 	}
 	if c.ChatTemplate != "" {
 		args = append(args, "--chat-template", c.ChatTemplate)
