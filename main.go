@@ -100,6 +100,17 @@ func runAgent() {
 		log.Fatal("either -token (an existing agent token) or -api-token (an IAM/account token to auto-provision one) is required")
 	}
 
+	// -supported-features is declared independently of the vllm tool-calling
+	// flags below, so nothing otherwise stops an operator from advertising
+	// "tools" while -deploy-vllm boots without --enable-auto-tool-choice/
+	// --tool-call-parser - the catalog would then claim tool support this
+	// backend actually rejects with a 400 on every call. Only checked under
+	// -deploy-vllm, since that's the only mode where box-agent itself
+	// controls whether vllm serve gets those flags at all.
+	if *deployVLLM && containsCSV(*supportedFeatures, "tools") && (!*vllmEnableAutoToolChoice || *vllmToolCallParser == "") {
+		log.Fatal("-supported-features declares \"tools\" but -vllm-enable-auto-tool-choice/-vllm-tool-call-parser aren't both set - either configure them or drop \"tools\" from -supported-features")
+	}
+
 	if *installModel {
 		log.Printf("installing model %q via Ollama before starting", *backendModel)
 		if err := ensureOllamaInstalled(); err != nil {
@@ -316,6 +327,17 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// containsCSV reports whether tag appears as one of the comma-separated,
+// trimmed entries in s.
+func containsCSV(s, tag string) bool {
+	for _, f := range splitCSV(s) {
+		if f == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // runInstallModel is the "box-agent install-model" subcommand: makes sure
