@@ -291,14 +291,19 @@ func runAgent() {
 		SupportedFeatures: splitCSV(*supportedFeatures),
 	}
 
+	// gate ties every router connection below to the local backend's health -
+	// see routerGate (gate.go) and monitorBackendHealth's gate.markUnhealthy/
+	// markHealthy calls.
+	gate := newRouterGate()
+
 	// One monitor for the whole process, not per-connection - -llm-url is one
 	// shared local backend regardless of how many router WebSocket
 	// connections (-connections) proxy to it.
-	go monitorBackendHealth(backend, api, vllmSup)
+	go monitorBackendHealth(backend, api, vllmSup, gate)
 
 	runConnLoop := func(connIdx int) {
 		for {
-			if err := connectAndServe(connectURL, agentToken, backend, caps); err != nil {
+			if err := connectAndServe(connectURL, agentToken, backend, caps, gate, connIdx); err != nil {
 				log.Printf("connection %d/%d error: %v — reconnecting in 5s", connIdx, *connections, err)
 			}
 			time.Sleep(5 * time.Second)

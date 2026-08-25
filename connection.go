@@ -36,12 +36,21 @@ var agentDialer = websocket.Dialer{
 
 // connectAndServe dials the router and serves chat requests until the
 // connection drops, at which point it returns so the caller can reconnect.
-func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities) error {
+// It waits on gate.waitHealthy before dialing - so once the local backend is
+// flagged unhealthy and this connection is cut (see routerGate, gate.go),
+// it doesn't immediately redial straight back into the same outage - and
+// registers the live conn with gate under connIdx so monitorBackendHealth
+// can force it closed the moment the backend goes unhealthy.
+func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities, gate *routerGate, connIdx int) error {
+	gate.waitHealthy()
+
 	conn, _, err := agentDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", connectURL, err)
 	}
 	defer conn.Close()
+	gate.setConn(connIdx, conn)
+	defer gate.clearConn(connIdx)
 	log.Printf("connected: %s", connectURL)
 
 	// gorilla/websocket forbids concurrent writers on one connection — every

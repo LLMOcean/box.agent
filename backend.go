@@ -126,7 +126,13 @@ func (b *llmBackend) healthCheck() error {
 // it, exactly as it would after a crash. bootGrace pauses checks afterward
 // so a slow reboot isn't mistaken for a second outage and killed again
 // mid-boot.
-func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervisor) {
+//
+// gate.markUnhealthy/markHealthy track the same transitions as the
+// reportHealth calls below: going unhealthy force-closes this agent's
+// router connection(s) (routerGate, gate.go) so the router stops routing
+// requests into a backend that's down, and going healthy again releases the
+// connection loop to redial.
+func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervisor, gate *routerGate) {
 	const (
 		checkInterval            = 20 * time.Second
 		consecutiveFailThreshold = 3
@@ -143,10 +149,11 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervi
 		if err == nil {
 			consecutiveFails = 0
 			if !healthy {
-				log.Printf("local LLM backend recovered — reporting healthy")
+				log.Printf("local LLM backend recovered — reporting healthy and reconnecting to router")
 				if reportErr := api.reportHealth(true, ""); reportErr != nil {
 					log.Printf("failed to report backend health recovery: %v", reportErr)
 				}
+				gate.markHealthy()
 				healthy = true
 			}
 			continue
@@ -154,10 +161,11 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervi
 
 		consecutiveFails++
 		if healthy && consecutiveFails >= consecutiveFailThreshold {
-			log.Printf("local LLM backend unreachable (%d consecutive checks): %v — reporting unhealthy", consecutiveFails, err)
+			log.Printf("local LLM backend unreachable (%d consecutive checks): %v — reporting unhealthy and cutting router connection", consecutiveFails, err)
 			if reportErr := api.reportHealth(false, err.Error()); reportErr != nil {
 				log.Printf("failed to report backend health outage: %v", reportErr)
 			}
+			gate.markUnhealthy()
 			healthy = false
 		}
 
