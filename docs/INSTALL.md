@@ -82,6 +82,54 @@ Pass `-router`/`-llm-url` (Linux/macOS) or `-Router`/`-LlmUrl` (Windows) to
 point at a self-hosted router or local LLM server instead — see
 [§4](#4-run-it-as-a-systemd-service) for a fully-explicit example.
 
+**Self-hosting the model with vLLM** instead of pointing `-llm-url` at an
+already-running backend: add `-deploy-vllm` (plus any `-vllm-*` flags) to
+the Linux/macOS command above and `install.sh` downloads `-backend-model`
+from Hugging Face, boots `vllm serve`, and supervises/restarts it as part
+of the same service — install, run the model, and register all become one
+command. `vllm` itself is **not** installed by the script (it needs a CUDA
+toolkit/driver and pinned Python/torch stack matched to the box) — run
+`pip install vllm` (or your own matched build) so it's on `PATH` first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
+  | sudo bash -s -- \
+      -provider yourns/your-model \
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "meta-llama/Llama-3.1-8B-Instruct" \
+      -deploy-vllm -vllm-hf-token "$HF_TOKEN"
+```
+
+See the README's [Deploying vLLM directly](../README.md#deploying-vllm-directly)
+section and `install.sh -h` for the full set of `-vllm-*` flags
+(tool-calling parser, reasoning parser, GPU memory utilization, max model
+length, ...).
+
+**No systemd? (Docker containers, e.g. a vast.ai instance)** — `install.sh`
+needs systemd (Linux) or launchd (macOS); a bare Docker container has
+neither. If the container already runs `supervisord` to manage its other
+processes (the common vast.ai template setup), use
+[`deploy/install-supervisord.sh`](../deploy/install-supervisord.sh) instead
+— same flags, same `-deploy-vllm` support, but it writes a supervisord
+program config and tells the running supervisord to pick it up rather than
+writing a systemd unit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-supervisord.sh \
+  | bash -s -- \
+      -provider yourns/your-model \
+      -token "$REGISTRATION_TOKEN" \
+      -backend-model "meta-llama/Llama-3.1-8B-Instruct" \
+      -deploy-vllm -vllm-hf-token "$HF_TOKEN"
+```
+
+It auto-detects the conf.d directory (`/etc/supervisor/conf.d`, falling
+back to `/etc/supervisord.d`) and best-effort installs `supervisor` itself
+if it isn't already present — but if the container has no process
+supervisor at all, `deploy/install-and-run.sh` (foreground, no
+persistence — restart it yourself on crash/reboot) is the simplest
+fallback.
+
 `install.ps1` tries a Windows release asset first and, since none is
 published today, falls back to building from source — which needs `git`
 and `go` on `PATH`. `install.sh` does the same on macOS/non-amd64 Linux.

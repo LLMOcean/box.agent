@@ -1,55 +1,43 @@
 #!/usr/bin/env bash
-# Installs box.agent as a persistent background service on this machine:
-# downloads (or, if no release binary is published for this OS/arch,
-# builds) the box-agent binary, installs it to survive reboots/crashes
-# (systemd on Linux, launchd on macOS), and starts it. Must be run as
-# root/sudo. See docs/INSTALL.md for the full walkthrough (and the manual
-# steps this script automates).
+# Installs box.agent as a supervisord-managed program - for boxes where
+# install.sh's systemd/launchd approach doesn't apply, most commonly a
+# Docker container (e.g. a vast.ai instance) that has no init system of its
+# own but already runs supervisord as PID 1 to manage sshd/jupyter/other
+# services. Downloads (or, if no release binary is published for this
+# OS/arch, builds) the box-agent binary, writes a supervisord program
+# config, and tells the running supervisord to pick it up. Must be run as
+# root (or with permission to write supervisord's conf.d and talk to
+# supervisorctl). See docs/INSTALL.md for the full walkthrough; see
+# install.sh instead if this box actually has systemd or launchd.
 #
-# Usage (flags mirror box-agent's own -flag names; run with -h for all of
-# them). -provider/-backend-model are always required - box-agent does not
-# guess the provider or model name. -router/-api-url default to the
-# greenference.com platform already; -llm-url defaults to a local server on
-# this box. For -token/-api-token, either:
+# Usage is identical to install.sh (same box-agent -flag names, same
+# -provider/-backend-model/-token requirements, same -deploy-vllm support
+# for self-hosting a model with vLLM) - run with -h for all of them.
 #
-#   - pass an existing per-instance -token (it doubles as -api-token unless
-#     that's given separately), or
-#   - omit -token and pass an IAM/account-level -api-token instead - box-agent
-#     auto-provisions a new agent instance/token on first run and caches it
-#     at -token-cache (default: /var/lib/box-agent/token) so restarts reuse
-#     it instead of provisioning a new instance every time.
-#
-#   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
-#     | sudo bash -s -- \
-#         -provider yourns/your-model \
-#         -token "$REGISTRATION_TOKEN" \
-#         -backend-model "your-model-id"
-#
-# Every flag can also be set via an identically-named (upper-cased, with
-# "-" -> "_") environment variable instead, e.g. PROVIDER=... TOKEN=...
-# ./install.sh - a flag always takes precedence over its env var.
-#
-# Installer-only flags/env vars (not forwarded to box-agent):
-#   -version (VERSION)           - release tag to install (default: latest)
-#   -install-dir (INSTALL_DIR)   - where to place the binary (default: /usr/local/bin)
-#   -service-user (SERVICE_USER) - Linux only: system user to run the service
-#                                   as (default: box-agent)
-#
-# Self-hosting the model with vLLM instead of pointing -llm-url at an
-# already-running backend: pass -deploy-vllm and box-agent itself will
-# download -backend-model from Hugging Face, boot "vllm serve", and
-# supervise/restart it - install/run-model/register all become this one
-# service. vllm itself is NOT installed by this script (it needs a CUDA
-# toolkit/driver and pinned Python/torch stack matched to the box) - run
-# `pip install vllm` (or your own matched build) yourself first, so it's on
-# PATH before invoking this script:
-#
-#   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install.sh \
-#     | sudo bash -s -- \
+#   curl -fsSL https://raw.githubusercontent.com/LLMOcean/box.agent/main/deploy/install-supervisord.sh \
+#     | bash -s -- \
 #         -provider yourns/your-model \
 #         -token "$REGISTRATION_TOKEN" \
 #         -backend-model "meta-llama/Llama-3.1-8B-Instruct" \
 #         -deploy-vllm -vllm-hf-token "$HF_TOKEN"
+#
+# Every flag can also be set via an identically-named (upper-cased, with
+# "-" -> "_") environment variable instead, e.g. PROVIDER=... TOKEN=...
+# ./install-supervisord.sh - a flag always takes precedence over its env var.
+#
+# Installer-only flags/env vars (not forwarded to box-agent):
+#   -version (VERSION)           - release tag to install (default: latest)
+#   -install-dir (INSTALL_DIR)   - where to place the binary (default: /usr/local/bin)
+#   -conf-dir (CONF_DIR)         - supervisord conf.d directory to write into
+#                                   (default: auto-detect /etc/supervisor/conf.d,
+#                                   then /etc/supervisord.d)
+#   -service-user (SERVICE_USER) - system user to run the program as (default:
+#                                   empty - runs as whichever user this script
+#                                   is run as, normally root; that's the norm
+#                                   for a single-tenant container like a
+#                                   vast.ai instance, unlike install.sh's
+#                                   systemd path, which defaults to a
+#                                   dedicated unprivileged user)
 
 set -euo pipefail
 
@@ -57,7 +45,7 @@ REPO="LLMOcean/box.agent"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: install.sh -provider NAME -backend-model NAME (-token TOK | -api-token TOK) [options]
+Usage: install-supervisord.sh -provider NAME -backend-model NAME (-token TOK | -api-token TOK) [options]
 
 Required:
   -provider NAME           provider name, e.g. yourns/your-model
@@ -90,8 +78,7 @@ box-agent flags (see docs/USAGE.md for details):
   -supported-features LIST
 
 vLLM self-hosting (box-agent downloads/boots/supervises "vllm serve"
-itself; requires vllm already on PATH - see comment at the top of this
-script, not installed by this script):
+itself; requires vllm already on PATH - not installed by this script):
   -deploy-vllm                boot -backend-model with vllm serve instead of
                               expecting an already-running -llm-url backend
   -vllm-gpu-util N             default: 0.9
@@ -111,7 +98,11 @@ script, not installed by this script):
 Installer-only flags:
   -version TAG               release tag to install (default: latest)
   -install-dir DIR            binary destination (default: /usr/local/bin)
-  -service-user USER          Linux system user to run as (default: box-agent)
+  -conf-dir DIR                supervisord conf.d directory (default:
+                              auto-detect /etc/supervisor/conf.d, then
+                              /etc/supervisord.d)
+  -service-user USER          system user to run the program as (default:
+                              empty - run as whoever invokes this script)
 EOF
 }
 
@@ -148,7 +139,8 @@ VLLM_BOOT_TIMEOUT="${VLLM_BOOT_TIMEOUT:-}"
 VLLM_LOG_FILE="${VLLM_LOG_FILE:-}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-SERVICE_USER="${SERVICE_USER:-box-agent}"
+CONF_DIR="${CONF_DIR:-}"
+SERVICE_USER="${SERVICE_USER:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -217,6 +209,8 @@ while [ $# -gt 0 ]; do
     -version=*) VERSION="${1#*=}"; shift ;;
     -install-dir) INSTALL_DIR="$2"; shift 2 ;;
     -install-dir=*) INSTALL_DIR="${1#*=}"; shift ;;
+    -conf-dir) CONF_DIR="$2"; shift 2 ;;
+    -conf-dir=*) CONF_DIR="${1#*=}"; shift ;;
     -service-user) SERVICE_USER="$2"; shift 2 ;;
     -service-user=*) SERVICE_USER="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -255,9 +249,8 @@ if [ "$DEPLOY_VLLM" = "true" ]; then
   fi
   VLLM_BIN_DIR="$(dirname "$(command -v vllm)")"
   # Mirrors box-agent's own -deploy-vllm + -supported-features "tools" check
-  # (main.go's containsCSV guard) - fail here, before the service is even
-  # written, rather than let it crash-loop on every restart with the same
-  # fatal log line.
+  # (main.go's containsCSV guard) - fail here, before the program is even
+  # registered, rather than let it crash-loop with the same fatal log line.
   case ",$(echo "$SUPPORTED_FEATURES" | tr -d ' ')," in
     *,tools,*)
       if [ "$VLLM_ENABLE_AUTO_TOOL_CHOICE" != "true" ] || [ -z "$VLLM_TOOL_CALL_PARSER" ]; then
@@ -267,8 +260,7 @@ if [ "$DEPLOY_VLLM" = "true" ]; then
       ;;
   esac
   # Defaulted here (rather than left to box-agent's own flag defaults) so
-  # the directories below get created/chowned for the same path that's
-  # then explicitly forwarded via EXTRA_ARGS.
+  # the directories created below match what's then explicitly forwarded.
   VLLM_LOG_FILE="${VLLM_LOG_FILE:-/var/log/box-agent-vllm.log}"
   VLLM_HF_HOME="${VLLM_HF_HOME:-/var/lib/box-agent/hf-cache}"
 fi
@@ -280,11 +272,71 @@ case "$uname_m" in
   arm64|aarch64) goarch=arm64 ;;
   *) goarch="$uname_m" ;;
 esac
-case "$uname_s" in
-  Linux) goos=linux ;;
-  Darwin) goos=darwin ;;
-  *) echo "error: unsupported OS '$uname_s' - see docs/INSTALL.md #7 to build from source manually" >&2; exit 1 ;;
-esac
+if [ "$uname_s" != "Linux" ]; then
+  echo "error: install-supervisord.sh targets Linux containers (got '$uname_s') - use install.sh instead" >&2
+  exit 1
+fi
+goos=linux
+
+# supervisord itself, not just box-agent - a standard, hardware-independent
+# package (unlike vllm), so a best-effort auto-install is safe here, the
+# same reasoning install-and-run.sh already applies to zstd.
+if ! command -v supervisorctl >/dev/null 2>&1; then
+  echo "supervisorctl not found - attempting to install supervisor..." >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    (apt-get update -qq && apt-get install -y -qq supervisor) || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache supervisor || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q supervisor || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q supervisor || true
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm supervisor || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper install -y supervisor || true
+  elif command -v pip3 >/dev/null 2>&1; then
+    pip3 install supervisor || true
+  fi
+  command -v supervisorctl >/dev/null 2>&1 || {
+    echo "error: supervisorctl still not found - install supervisor yourself (e.g. apt-get install supervisor / pip install supervisor), then rerun" >&2
+    exit 1
+  }
+fi
+
+if [ -z "$CONF_DIR" ]; then
+  if [ -d /etc/supervisor/conf.d ]; then
+    CONF_DIR=/etc/supervisor/conf.d
+  elif [ -d /etc/supervisord.d ]; then
+    CONF_DIR=/etc/supervisord.d
+  else
+    echo "error: could not find a supervisord conf.d directory (looked in /etc/supervisor/conf.d, /etc/supervisord.d) - pass -conf-dir DIR explicitly" >&2
+    exit 1
+  fi
+fi
+
+# Most Docker images that run supervisord (vast.ai's included) already have
+# it running as PID 1 or an early-boot service managing everything else in
+# the container - "supervisorctl pid" only succeeds if that's reachable.
+# Only try to start one ourselves as a fallback, for the less common case of
+# supervisor freshly installed above but not yet running.
+if ! supervisorctl pid >/dev/null 2>&1; then
+  echo "supervisord doesn't appear to be running - starting it" >&2
+  sd_conf=""
+  for c in /etc/supervisor/supervisord.conf /etc/supervisord.conf; do
+    [ -f "$c" ] && sd_conf="$c" && break
+  done
+  if [ -z "$sd_conf" ]; then
+    echo "error: supervisord is not running and no config file found (looked in /etc/supervisor/supervisord.conf, /etc/supervisord.conf) - start it yourself, then rerun" >&2
+    exit 1
+  fi
+  supervisord -c "$sd_conf"
+  sleep 1
+  supervisorctl pid >/dev/null 2>&1 || {
+    echo "error: started supervisord but still can't reach it via supervisorctl" >&2
+    exit 1
+  }
+fi
 
 dest="${INSTALL_DIR%/}/box-agent"
 asset="box-agent-${goos}-${goarch}"
@@ -339,169 +391,101 @@ if [ "$DEPLOY_VLLM" = "true" ]; then
   [ -n "$VLLM_EXTRA_ARGS" ] && EXTRA_ARGS+=("-vllm-extra-args" "$VLLM_EXTRA_ARGS")
   [ -n "$VLLM_BOOT_TIMEOUT" ] && EXTRA_ARGS+=("-vllm-boot-timeout" "$VLLM_BOOT_TIMEOUT")
   # Always forwarded (not just when overridden) - VLLM_LOG_FILE was defaulted
-  # above and the directories created/chowned below must match what
-  # box-agent is actually told to write to.
+  # above and the directory created below must match what box-agent is
+  # actually told to write to.
   EXTRA_ARGS+=("-vllm-log-file" "$VLLM_LOG_FILE")
-  # -vllm-hf-token/-vllm-hf-home are sent via Environment= instead (below),
-  # the same way TOKEN/API_TOKEN already are, rather than as plain-text
-  # command-line flags.
+  # -vllm-hf-token/-vllm-hf-home are sent via environment= instead (below),
+  # the same way AGENT_TOKEN/API_TOKEN already are, rather than as
+  # plain-text command-line flags.
 fi
 
-if [ "$goos" = "linux" ]; then
-  UNIT_PATH="/etc/systemd/system/box-agent.service"
-
-  if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-    echo "Creating system user ${SERVICE_USER}" >&2
-    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-  fi
-
-  if [ -z "$TOKEN" ]; then
-    # Auto-provisioning path: box-agent (running as SERVICE_USER, not root)
-    # needs write access to the token cache directory itself, since /var/lib
-    # is root-owned and not writable by an unprivileged user by default.
-    cache_dir="$(dirname "$TOKEN_CACHE")"
-    echo "Creating token cache dir ${cache_dir} (owned by ${SERVICE_USER})" >&2
-    mkdir -p "$cache_dir"
-    chown "$SERVICE_USER" "$cache_dir"
-    chmod 700 "$cache_dir"
-  fi
-
-  if [ "$DEPLOY_VLLM" = "true" ]; then
-    # SERVICE_USER (unprivileged) needs write access to the vllm log file
-    # and HF cache dir - /var/log and /var/lib are root-owned and not
-    # writable by other users by default, same reasoning as TOKEN_CACHE
-    # above.
-    log_dir="$(dirname "$VLLM_LOG_FILE")"
-    echo "Creating vllm log dir ${log_dir} (owned by ${SERVICE_USER})" >&2
-    mkdir -p "$log_dir"
-    touch "$VLLM_LOG_FILE"
-    chown "$SERVICE_USER" "$log_dir" "$VLLM_LOG_FILE"
-
-    echo "Creating HF cache dir ${VLLM_HF_HOME} (owned by ${SERVICE_USER})" >&2
-    mkdir -p "$VLLM_HF_HOME"
-    chown "$SERVICE_USER" "$VLLM_HF_HOME"
-  fi
-
-  extra_str="${EXTRA_ARGS[*]:-}"
-  echo "Writing ${UNIT_PATH}" >&2
-  {
-    echo "[Unit]"
-    echo "Description=router.agent remote WebSocket agent (box.agent)"
-    echo "After=network.target"
-    echo ""
-    echo "[Service]"
-    echo "ExecStart=${dest} -router ${ROUTER} -provider ${PROVIDER} -api-url ${API_URL} -llm-url ${LLM_URL}${extra_str:+ $extra_str}"
-    [ -n "$TOKEN" ] && echo "Environment=AGENT_TOKEN=${TOKEN}"
-    echo "Environment=API_TOKEN=${API_TOKEN}"
-    [ -n "$LLM_API_KEY" ] && echo "Environment=LLM_API_KEY=${LLM_API_KEY}"
-    if [ "$DEPLOY_VLLM" = "true" ]; then
-      # systemd services get a minimal default PATH that won't include a
-      # pip/venv install location - prepend vllm's own resolved bin dir so
-      # the "vllm" child process box-agent execs actually resolves.
-      echo "Environment=PATH=${VLLM_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-      [ -n "$VLLM_HF_TOKEN" ] && echo "Environment=HF_TOKEN=${VLLM_HF_TOKEN}"
-      echo "Environment=HF_HOME=${VLLM_HF_HOME}"
-    fi
-    echo "Restart=always"
-    echo "RestartSec=5"
-    echo "User=${SERVICE_USER}"
-    echo ""
-    echo "[Install]"
-    echo "WantedBy=multi-user.target"
-  } > "$UNIT_PATH"
-
-  # Unit file holds the registration token in plain text - keep it
-  # root-only readable rather than the usual world-readable 644.
-  chmod 600 "$UNIT_PATH"
-
-  systemctl daemon-reload
-  systemctl enable --now box-agent.service
-
-  echo "box-agent installed and started." >&2
-  echo "  systemctl status box-agent.service" >&2
-  echo "  journalctl -u box-agent.service -f" >&2
-
-elif [ "$goos" = "darwin" ]; then
-  PLIST_LABEL="com.llmocean.box-agent"
-  PLIST_PATH="/Library/LaunchDaemons/${PLIST_LABEL}.plist"
-  LOG_PATH="/var/log/box-agent.log"
-
-  xml_escape() {
-    local s="$1"
-    s="${s//&/&amp;}"
-    s="${s//</&lt;}"
-    s="${s//>/&gt;}"
-    printf '%s' "$s"
-  }
-
-  PROGRAM_ARGS=("$dest" "-router" "$ROUTER" "-provider" "$PROVIDER" "-api-url" "$API_URL" "-llm-url" "$LLM_URL")
-  # macOS's default /bin/bash is 3.2 (pre-4.4), where "${arr[@]}" on a
-  # zero-element array trips "unbound variable" under set -u - guard the
-  # count first rather than expanding directly.
-  if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
-    PROGRAM_ARGS+=("${EXTRA_ARGS[@]}")
-  fi
-
-  echo "Writing ${PLIST_PATH}" >&2
-  {
-    echo '<?xml version="1.0" encoding="UTF-8"?>'
-    echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-    echo '<plist version="1.0">'
-    echo '<dict>'
-    echo '  <key>Label</key>'
-    echo "  <string>${PLIST_LABEL}</string>"
-    echo '  <key>ProgramArguments</key>'
-    echo '  <array>'
-    for a in "${PROGRAM_ARGS[@]}"; do
-      echo "    <string>$(xml_escape "$a")</string>"
-    done
-    echo '  </array>'
-    echo '  <key>EnvironmentVariables</key>'
-    echo '  <dict>'
-    if [ -n "$TOKEN" ]; then
-      echo '    <key>AGENT_TOKEN</key>'
-      echo "    <string>$(xml_escape "$TOKEN")</string>"
-    fi
-    echo '    <key>API_TOKEN</key>'
-    echo "    <string>$(xml_escape "$API_TOKEN")</string>"
-    if [ -n "$LLM_API_KEY" ]; then
-      echo '    <key>LLM_API_KEY</key>'
-      echo "    <string>$(xml_escape "$LLM_API_KEY")</string>"
-    fi
-    if [ "$DEPLOY_VLLM" = "true" ]; then
-      echo '    <key>PATH</key>'
-      echo "    <string>$(xml_escape "${VLLM_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")</string>"
-      if [ -n "$VLLM_HF_TOKEN" ]; then
-        echo '    <key>HF_TOKEN</key>'
-        echo "    <string>$(xml_escape "$VLLM_HF_TOKEN")</string>"
-      fi
-      echo '    <key>HF_HOME</key>'
-      echo "    <string>$(xml_escape "$VLLM_HF_HOME")</string>"
-      mkdir -p "$VLLM_HF_HOME"
-    fi
-    echo '  </dict>'
-    echo '  <key>RunAtLoad</key>'
-    echo '  <true/>'
-    echo '  <key>KeepAlive</key>'
-    echo '  <true/>'
-    echo '  <key>StandardOutPath</key>'
-    echo "  <string>${LOG_PATH}</string>"
-    echo '  <key>StandardErrorPath</key>'
-    echo "  <string>${LOG_PATH}</string>"
-    echo '</dict>'
-    echo '</plist>'
-  } > "$PLIST_PATH"
-
-  # Runs as root (no UserName key) - launchd's LaunchDaemons are
-  # inherently root-installed anyway, and plist holds the registration
-  # token in plain text, so keep it root-only readable.
-  chown root:wheel "$PLIST_PATH"
-  chmod 600 "$PLIST_PATH"
-
-  launchctl unload -w "$PLIST_PATH" >/dev/null 2>&1 || true
-  launchctl load -w "$PLIST_PATH"
-
-  echo "box-agent installed and started." >&2
-  echo "  sudo launchctl list | grep ${PLIST_LABEL}" >&2
-  echo "  tail -f ${LOG_PATH}" >&2
+if [ -n "$SERVICE_USER" ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  echo "Creating system user ${SERVICE_USER}" >&2
+  useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
+
+# chown_if_service_user: directories below default to root-owned, which is
+# fine when the program also runs as root (SERVICE_USER unset, the common
+# case in a single-tenant container). Only need to hand ownership over when
+# an unprivileged -service-user was explicitly requested.
+chown_if_service_user() {
+  [ -n "$SERVICE_USER" ] && chown "$SERVICE_USER" "$@"
+  return 0
+}
+
+if [ -z "$TOKEN" ]; then
+  cache_dir="$(dirname "$TOKEN_CACHE")"
+  echo "Creating token cache dir ${cache_dir}" >&2
+  mkdir -p "$cache_dir"
+  chown_if_service_user "$cache_dir"
+  [ -z "$SERVICE_USER" ] && chmod 700 "$cache_dir" || true
+fi
+
+if [ "$DEPLOY_VLLM" = "true" ]; then
+  log_dir="$(dirname "$VLLM_LOG_FILE")"
+  echo "Creating vllm log dir ${log_dir}" >&2
+  mkdir -p "$log_dir"
+  touch "$VLLM_LOG_FILE"
+  chown_if_service_user "$log_dir" "$VLLM_LOG_FILE"
+
+  echo "Creating HF cache dir ${VLLM_HF_HOME}" >&2
+  mkdir -p "$VLLM_HF_HOME"
+  chown_if_service_user "$VLLM_HF_HOME"
+fi
+
+# supervisord's "environment=" line is a comma-separated KEY="value" list
+# where "%" needs doubling and embedded quotes need escaping - build it
+# through a small escaper rather than interpolating tokens raw.
+supervisor_escape() {
+  local s="$1"
+  s="${s//%/%%}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+ENV_PAIRS=()
+[ -n "$TOKEN" ] && ENV_PAIRS+=("AGENT_TOKEN=\"$(supervisor_escape "$TOKEN")\"")
+ENV_PAIRS+=("API_TOKEN=\"$(supervisor_escape "$API_TOKEN")\"")
+[ -n "$LLM_API_KEY" ] && ENV_PAIRS+=("LLM_API_KEY=\"$(supervisor_escape "$LLM_API_KEY")\"")
+if [ "$DEPLOY_VLLM" = "true" ]; then
+  # supervisord programs get a minimal default PATH that won't include a
+  # pip/venv install location - prepend vllm's own resolved bin dir so the
+  # "vllm" child process box-agent execs actually resolves.
+  ENV_PAIRS+=("PATH=\"$(supervisor_escape "${VLLM_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")\"")
+  [ -n "$VLLM_HF_TOKEN" ] && ENV_PAIRS+=("HF_TOKEN=\"$(supervisor_escape "$VLLM_HF_TOKEN")\"")
+  ENV_PAIRS+=("HF_HOME=\"$(supervisor_escape "$VLLM_HF_HOME")\"")
+fi
+env_str=""
+for kv in "${ENV_PAIRS[@]}"; do
+  env_str="${env_str:+${env_str},}${kv}"
+done
+
+extra_str="${EXTRA_ARGS[*]:-}"
+conf_path="${CONF_DIR%/}/box-agent.conf"
+echo "Writing ${conf_path}" >&2
+{
+  echo "[program:box-agent]"
+  echo "command=${dest} -router ${ROUTER} -provider ${PROVIDER} -api-url ${API_URL} -llm-url ${LLM_URL}${extra_str:+ $extra_str}"
+  echo "autostart=true"
+  echo "autorestart=true"
+  echo "startsecs=1"
+  echo "stopsignal=TERM"
+  echo "stdout_logfile=/var/log/box-agent.out.log"
+  echo "stdout_logfile_maxbytes=10MB"
+  echo "stdout_logfile_backups=3"
+  echo "redirect_stderr=true"
+  [ -n "$env_str" ] && echo "environment=${env_str}"
+  [ -n "$SERVICE_USER" ] && echo "user=${SERVICE_USER}"
+} > "$conf_path"
+
+# Conf file holds the registration token in plain text - keep it root-only
+# readable rather than the usual world-readable 644, same reasoning as
+# install.sh's systemd unit/launchd plist.
+chmod 600 "$conf_path"
+
+supervisorctl reread
+supervisorctl update
+
+echo "box-agent installed and started under supervisord." >&2
+echo "  supervisorctl status box-agent" >&2
+echo "  supervisorctl tail -f box-agent" >&2

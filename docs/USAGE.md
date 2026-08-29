@@ -173,6 +173,9 @@ For a long-running deployment, use a process supervisor rather than a bare
 foreground process:
 
 - **systemd** — see [`deploy/systemd/box-agent.service`](../deploy/systemd/box-agent.service).
+- **supervisord** — for a container with no systemd/launchd (e.g. a vast.ai
+  instance) that already runs supervisord to manage its other processes —
+  see [`deploy/install-supervisord.sh`](../deploy/install-supervisord.sh).
 - **Docker** — see [`Dockerfile`](../Dockerfile); only needed if your LLM
   server is also containerized on the same host/network.
 

@@ -163,6 +163,14 @@ table above (`-vllm-*`) for tuning `--gpu-memory-utilization`,
 `--max-model-len`, `--enable-sleep-mode`, the tool-call parser/chat
 template, and raw passthrough args.
 
+The command above runs box-agent directly in the foreground (nothing
+persists past the shell that started it) — for a persistent, auto-restarting
+deployment, pass the same `-deploy-vllm`/`-vllm-*` flags to
+[`deploy/install.sh`](deploy/install.sh) instead, which installs a
+systemd/launchd service that owns the download, the `vllm serve` child, and
+the router registration together. See [docs/INSTALL.md](docs/INSTALL.md)
+for the full walkthrough.
+
 ## Behavior
 
 - On boot, registers `-backend-model` with the management API
