@@ -77,3 +77,12 @@ func (g *routerGate) markHealthy() {
 	g.mu.Unlock()
 	g.cond.Broadcast()
 }
+
+// liveConnCount reports how many of the configured router connections are
+// currently dialed - for status reporting only (reporter.go); setConn/
+// clearConn remain the only writers.
+func (g *routerGate) liveConnCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.conns)
+}

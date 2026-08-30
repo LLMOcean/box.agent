@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // apiClient registers this box-agent instance with the management API, so
@@ -216,6 +217,119 @@ func (a *apiClient) registerModel(model, provider string, isPublic bool, inputPe
 	}
 
 	req, err := http.NewRequest(http.MethodPost, a.baseURL+"/llmocean/agent-instances/register-model", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.token)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("api backend error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// reportStatusRequest is a merge-patch snapshot of this instance's current
+// state - unlike reportMetricsRequest below, a zero/unknown field here must
+// never overwrite previously-known server-side state, same reasoning
+// registerModelRequest's own omitempty fields already use. Sent both
+// immediately on every BackendState transition (so "downloading the model"/
+// "booting" is visible close to live, not just on the next periodic tick)
+// and periodically as a steady-state heartbeat - see reporter.go's
+// reportStatusLoop, the only caller.
+type reportStatusRequest struct {
+	State                       BackendState       `json:"state"`
+	AgentVersion                string             `json:"agent_version,omitempty"`
+	AgentUptimeSeconds          float64            `json:"agent_uptime_seconds,omitempty"`
+	Host                        HostStatus         `json:"host,omitempty"`
+	Backend                     BackendStatus      `json:"backend,omitempty"`
+	VLLMProcess                 *VLLMProcessStatus `json:"vllm_process,omitempty"`
+	RouterConnections           int                `json:"router_connections"` // no omitempty - 0 live is the alarm signal
+	RouterConnectionsConfigured int                `json:"router_connections_configured,omitempty"`
+	ReportedAt                  time.Time          `json:"reported_at"`
+}
+
+// reportStatus tells the API backend this instance's current lifecycle
+// state and a resource/backend snapshot - see reportStatusRequest's doc
+// comment for the merge-patch semantics this relies on.
+func (a *apiClient) reportStatus(reqBody reportStatusRequest) error {
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, a.baseURL+"/llmocean/agent-instances/report-status", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.token)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("api backend error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// reportMetricsRequest is one independent time-series event describing
+// "what happened in this window" - the opposite semantics from
+// reportStatusRequest above: RequestCount of 0 is real, meaningful data (an
+// idle box) and must never be omitted or merged away, so this endpoint is
+// sent unconditionally every window regardless of traffic. See
+// reporter.go's reportMetricsLoop, the only caller, and requestWindow.
+// snapshot (metrics.go), which builds this struct.
+type reportMetricsRequest struct {
+	WindowStart   time.Time `json:"window_start"`
+	WindowSeconds float64   `json:"window_seconds"`
+
+	RequestCount int64 `json:"request_count"` // never omitempty - 0 is meaningful
+	ErrorCount   int64 `json:"error_count"`
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+
+	AvgInputTokensPerRequest  float64 `json:"avg_input_tokens_per_request,omitempty"`
+	AvgOutputTokensPerRequest float64 `json:"avg_output_tokens_per_request,omitempty"`
+	// TokensPerSecond is omitted (not sent as zero) when RequestCount==0 -
+	// undefined for an idle window, not "0 tok/s".
+	TokensPerSecond float64 `json:"tokens_per_second,omitempty"`
+
+	NonStreamCount        int64   `json:"non_streaming_count"`
+	NonStreamLatencyAvgMs float64 `json:"non_streaming_latency_avg_ms,omitempty"`
+	// NonStreamLatencyP95Ms is a bucket-resolution approximation, not an
+	// exact percentile - see p95FromBuckets (metrics.go).
+	NonStreamLatencyP95Ms float64 `json:"non_streaming_latency_p95_ms,omitempty"`
+
+	StreamCount     int64   `json:"streaming_count"`
+	StreamTTFTAvgMs float64 `json:"streaming_ttft_avg_ms,omitempty"`
+	StreamTTFTP95Ms float64 `json:"streaming_ttft_p95_ms,omitempty"` // also bucket-resolution, see above
+}
+
+// reportMetrics flushes one reporting window's aggregated request
+// performance to the API - see reportMetricsRequest's doc comment for why
+// this is sent unconditionally, including all-zero windows.
+func (a *apiClient) reportMetrics(reqBody reportMetricsRequest) error {
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, a.baseURL+"/llmocean/agent-instances/report-metrics", bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

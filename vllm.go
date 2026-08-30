@@ -145,8 +145,13 @@ func (c vllmConfig) args() []string {
 type vllmSupervisor struct {
 	cfg vllmConfig
 
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	startedAt        time.Time
+	restartCount     int
+	lastExitAt       time.Time
+	lastExitReason   string // "crash" | "watchdog"
+	killedByWatchdog bool   // set by kill(), consumed by run()'s loop after Wait() returns
 }
 
 func newVLLMSupervisor(cfg vllmConfig) *vllmSupervisor {
@@ -170,22 +175,56 @@ func (s *vllmSupervisor) run() {
 		env = append(env, "HF_HOME="+s.cfg.HFHome)
 	}
 
+	firstLaunch := true
 	for {
 		cmd := exec.Command("vllm", s.cfg.args()...)
 		cmd.Env = env
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
 
+		// s.cmd is set before Start() (matching kill()'s existing
+		// cmd.Process==nil guard for a not-yet-started process) so a kill()
+		// racing right against startup still sees the process, same as
+		// before this change.
 		s.mu.Lock()
 		s.cmd = cmd
+		s.killedByWatchdog = false
 		s.mu.Unlock()
 
 		log.Printf("starting vllm serve %s on :%s (log: %s)", s.cfg.Repo, s.cfg.Port, s.cfg.LogPath)
-		runErr := cmd.Run()
+		if err := cmd.Start(); err != nil {
+			log.Printf("vllm serve %s failed to start: %v - retrying in 10s", s.cfg.Repo, err)
+			s.mu.Lock()
+			s.cmd = nil
+			s.mu.Unlock()
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// Start()+Wait() rather than the simpler cmd.Run(), so startedAt (and
+		// cmd.Process.Pid, read by status() below) are known as soon as the
+		// process actually exists, instead of only after the whole blocking
+		// call returns - a status() call mid-run needs a valid PID/uptime, not
+		// just once the child has already exited.
+		s.mu.Lock()
+		s.startedAt = time.Now()
+		if !firstLaunch {
+			s.restartCount++
+		}
+		firstLaunch = false
+		s.mu.Unlock()
+
+		runErr := cmd.Wait()
 		log.Printf("vllm serve %s exited: %v - restarting in 10s", s.cfg.Repo, runErr)
 
 		s.mu.Lock()
 		s.cmd = nil
+		s.lastExitAt = time.Now()
+		if s.killedByWatchdog {
+			s.lastExitReason = "watchdog"
+		} else {
+			s.lastExitReason = "crash"
+		}
 		s.mu.Unlock()
 
 		time.Sleep(10 * time.Second)
@@ -198,12 +237,35 @@ func (s *vllmSupervisor) run() {
 func (s *vllmSupervisor) kill() {
 	s.mu.Lock()
 	cmd := s.cmd
+	if cmd != nil && cmd.Process != nil {
+		s.killedByWatchdog = true
+	}
 	s.mu.Unlock()
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
 	log.Printf("watchdog killing vllm serve %s (unresponsive)", s.cfg.Repo)
 	_ = cmd.Process.Kill()
+}
+
+// status snapshots this supervisor's current run state for reporting -
+// callable from any goroutine, unlike cmd itself which must stay behind mu.
+func (s *vllmSupervisor) status() VLLMProcessStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := VLLMProcessStatus{RestartCount: s.restartCount}
+	if s.cmd != nil && s.cmd.Process != nil {
+		st.Running = true
+		st.PID = s.cmd.Process.Pid
+		st.UptimeSeconds = time.Since(s.startedAt).Seconds()
+	}
+	if !s.lastExitAt.IsZero() {
+		t := s.lastExitAt
+		st.LastRestartAt = &t
+		st.LastRestartReason = s.lastExitReason
+	}
+	return st
 }
 
 // waitVLLMReady polls baseURL's /v1/models until it answers or timeout

@@ -9,8 +9,71 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// sharedHealth is written by monitorBackendHealth on each healthy<->unhealthy
+// transition and read by the periodic status reporter (reporter.go), so
+// report-status's Backend.Healthy field reuses the one health signal
+// box-agent already computes instead of running a second, independently-
+// timed probe against the same backend that could disagree with the
+// authoritative one.
+type sharedHealth struct {
+	v int32 // 0 = healthy, 1 = unhealthy - int32 not atomic.Bool, go.mod pins go 1.18
+}
+
+func (h *sharedHealth) set(healthy bool) {
+	if healthy {
+		atomic.StoreInt32(&h.v, 0)
+	} else {
+		atomic.StoreInt32(&h.v, 1)
+	}
+}
+
+func (h *sharedHealth) get() bool {
+	return atomic.LoadInt32(&h.v) == 0
+}
+
+// sharedBackendState is written by main.go's -deploy-vllm block (download/
+// boot phases) and monitorBackendHealth (ready/unhealthy/restarting) as the
+// backend moves through its lifecycle (see BackendState, hoststatus.go),
+// and read by reporter.go's reportStatusLoop. atomic.Value rather than a
+// mutex - available since Go 1.4, no go 1.18 conflict (unlike a generic
+// atomic.Pointer[T]), and a plain load/store is all one string value needs.
+type sharedBackendState struct {
+	v atomic.Value // holds BackendState
+}
+
+func newSharedBackendState(initial BackendState) *sharedBackendState {
+	s := &sharedBackendState{}
+	s.v.Store(initial)
+	return s
+}
+
+func (s *sharedBackendState) set(state BackendState) {
+	s.v.Store(state)
+}
+
+func (s *sharedBackendState) get() BackendState {
+	v, _ := s.v.Load().(BackendState)
+	return v
+}
+
+// notifyBackendState pushes a non-blocking, coalescing signal that
+// reportStatusLoop should send an immediate out-of-band report - a
+// buffered size-1 channel so a burst of rapid transitions collapses into
+// one pending wakeup rather than blocking the state-owning goroutine
+// (main.go's -deploy-vllm block, or this file's monitorBackendHealth).
+// The reporter reads whatever the *current* state is at send time via
+// sharedBackendState.get(), so collapsing bursts never loses the final
+// state, only intermediate ones a human wouldn't have seen anyway.
+func notifyBackendState(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
 
 // backendError classifies a non-200 response from the local LLM backend with
 // its real HTTP status, instead of collapsing it into a plain string like
@@ -132,7 +195,7 @@ func (b *llmBackend) healthCheck() error {
 // router connection(s) (routerGate, gate.go) so the router stops routing
 // requests into a backend that's down, and going healthy again releases the
 // connection loop to redial.
-func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervisor, gate *routerGate) {
+func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervisor, gate *routerGate, health *sharedHealth, state *sharedBackendState, notify chan<- struct{}) {
 	const (
 		checkInterval            = 20 * time.Second
 		consecutiveFailThreshold = 3
@@ -148,6 +211,19 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervi
 		err := backend.healthCheck()
 		if err == nil {
 			consecutiveFails = 0
+			// Set outside the !healthy branch below, unlike the
+			// reportHealth/gate calls there - healthy starts true in this
+			// function (the steady-state assumption reportHealth's own
+			// "only report transitions" design relies on), so a backend
+			// that's healthy from its very first check here would
+			// otherwise never take the !healthy branch at all and state
+			// would stay stuck at whatever main.go left it as (e.g.
+			// "starting") forever. Guarded on state.get() != Ready so this
+			// doesn't fire (and doesn't notify) on every steady-state tick.
+			if state.get() != BackendStateReady {
+				state.set(BackendStateReady)
+				notifyBackendState(notify)
+			}
 			if !healthy {
 				log.Printf("local LLM backend recovered — reporting healthy and reconnecting to router")
 				if reportErr := api.reportHealth(true, ""); reportErr != nil {
@@ -155,6 +231,7 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervi
 				}
 				gate.markHealthy()
 				healthy = true
+				health.set(true)
 			}
 			continue
 		}
@@ -167,11 +244,23 @@ func monitorBackendHealth(backend *llmBackend, api *apiClient, vllm *vllmSupervi
 			}
 			gate.markUnhealthy()
 			healthy = false
+			health.set(false)
+			state.set(BackendStateUnhealthy)
+			notifyBackendState(notify)
 		}
 
 		if vllm != nil && consecutiveFails == consecutiveFailThreshold {
 			vllm.kill()
 			consecutiveFails = 0
+			// Restarting rather than staying "unhealthy" - a relaunch is
+			// now imminent via vllmSupervisor's own restart-on-exit loop.
+			// Whether this particular kill actually caught a live hung
+			// process, versus no-op'd on one that had already exited on
+			// its own, is tracked more reliably at the per-process level
+			// (VLLMProcessStatus.LastRestartReason, "watchdog" vs "crash" -
+			// see vllm.go's run()) rather than re-derived here.
+			state.set(BackendStateRestarting)
+			notifyBackendState(notify)
 			time.Sleep(bootGrace)
 		}
 	}

@@ -41,7 +41,7 @@ var agentDialer = websocket.Dialer{
 // it doesn't immediately redial straight back into the same outage - and
 // registers the live conn with gate under connIdx so monitorBackendHealth
 // can force it closed the moment the backend goes unhealthy.
-func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities, gate *routerGate, connIdx int) error {
+func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabilities, gate *routerGate, connIdx int, metrics *requestMetrics) error {
 	gate.waitHealthy()
 
 	conn, _, err := agentDialer.Dial(connectURL, http.Header{"Authorization": {"Bearer " + token}})
@@ -116,7 +116,7 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 			wg.Add(1)
 			go func(req Frame, recvAt time.Time) {
 				defer wg.Done()
-				handleChat(req, recvAt, backend, send)
+				handleChat(req, recvAt, backend, send, metrics)
 			}(f, recvAt)
 		case "benchmark":
 			wg.Add(1)
@@ -133,7 +133,10 @@ func handleBenchmark(req Frame, backend *llmBackend, send func(Frame) error) {
 	send(Frame{Type: "benchmark_result", RequestID: req.RequestID, Benchmark: &result})
 }
 
-func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Frame) error) {
+func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Frame) error, metrics *requestMetrics) {
+	window := metrics.window()
+	window.recordRequestStart()
+
 	msgs := make([]openaiMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
 		msgs = append(msgs, openaiMessage{Role: "system", Content: req.System})
@@ -150,9 +153,12 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 	if !req.Stream {
 		content, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
+			window.recordError()
 			send(errorFrame(req.RequestID, err))
 			return
 		}
+		window.recordNonStreamLatency(time.Since(recvAt))
+		window.recordTokens(usage)
 		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
 		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs})
 		return
@@ -164,6 +170,7 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 			if firstChunk {
 				firstChunk = false
 				backendTTFT := time.Since(recvAt)
+				window.recordTTFT(backendTTFT)
 				// Times just this first chunk's Frame marshal + WebSocket
 				// write - the one JSON-codec cost on this agent's side that
 				// could plausibly land inside TTFT (every later chunk this
@@ -178,9 +185,11 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk, LogprobsResult: logprobs})
 		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
+			window.recordTokens(usage)
 			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
 		})
 	if err != nil {
+		window.recordError()
 		send(errorFrame(req.RequestID, err))
 	}
 }

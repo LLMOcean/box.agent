@@ -80,6 +80,9 @@ func runAgent() {
 	outputModalities := flag.String("output-modalities", "text", "comma-separated output modalities this model produces")
 	supportedFeatures := flag.String("supported-features", "", "comma-separated capability tags this backend supports, e.g. \"tools,json_mode\" (empty = none declared)")
 	connections := flag.Int("connections", 1, "number of parallel WebSocket connections to open to the router, all under the same -provider/-token, all proxying to the same -llm-url - an experiment for isolating whether one connection's write-serialization (see router.agent's Conn.writeMu) is ever a real bottleneck versus the backend's own concurrency ceiling; most deployments should leave this at 1 and instead run separate box-agent processes per independent backend (see README)")
+	statusReportInterval := flag.Duration("status-report-interval", 60*time.Second, "how often to send a periodic host/backend status heartbeat to the management API, on top of immediate reports sent on every backend lifecycle transition (downloading the model, booting, ready, unhealthy, restarting - see docs/TELEMETRY.md)")
+	metricsReportInterval := flag.Duration("metrics-report-interval", 30*time.Second, "how often to flush and report aggregated request performance (latency, TTFT, throughput, error rate) to the management API - also the aggregation window size; sent unconditionally, including all-zero idle windows")
+	disableTelemetry := flag.Bool("disable-telemetry", false, "skip starting the periodic status/metrics reporting loops entirely")
 	showVersion := flag.Bool("version", false, "print the build version and exit - compares a running/downloaded binary against what's actually published (git tags and GitHub Releases are different things; a stale binary silently missing newly-added flags, like this one used to, is usually a release-vs-tag mismatch)")
 	flag.Parse()
 
@@ -89,6 +92,7 @@ func runAgent() {
 	}
 
 	log.Printf("box-agent version %s", version.Version)
+	processStartedAt := time.Now()
 
 	if *connections < 1 {
 		log.Fatal("-connections must be >= 1")
@@ -123,6 +127,117 @@ func runAgent() {
 		log.Printf("installed %q", *backendModel)
 	}
 
+	// -backend-model is the model, full stop - box-agent used to fall back
+	// to GET {-llm-url}/v1/models and guess from whatever came back first
+	// when this was unset, which silently registered garbage if -llm-url
+	// pointed at anything other than a genuine single-model backend (e.g.
+	// a multi-model catalog/router). Require it explicitly instead.
+	model := *backendModel
+
+	// -token and -api-token are the same value in practice (one
+	// registration token authenticates both the router connection and the
+	// management API) - fall back to -token so operators only pass one,
+	// while still letting -api-token/API_TOKEN override it if they ever
+	// diverge. Only applies when -token was actually given directly; when
+	// it wasn't, -api-token is an IAM token for provisioning instead, not a
+	// per-instance one, so it must never be used as this fallback.
+	if *apiToken == "" && *token != "" {
+		apiToken = token
+	}
+
+	// The management API's provider is a bare name (e.g. "plusclouds"), not
+	// the router's "provider/model" namespace - strip off anything after the
+	// first "/" in case the operator already passed the combined form to
+	// -provider.
+	apiProviderName := *provider
+	if idx := strings.Index(apiProviderName, "/"); idx != -1 {
+		apiProviderName = apiProviderName[:idx]
+	}
+
+	// Token resolution moved ahead of the -deploy-vllm block below
+	// (download + boot, which can block for many minutes on a large model)
+	// so a valid per-instance token exists before reportStatusLoop starts -
+	// otherwise, under auto-provisioning, there would be nothing to
+	// authenticate a status report with for the entire download/boot phase,
+	// which is exactly the state operators most want live visibility into.
+	// See docs/TELEMETRY.md.
+	//
+	// agentToken is the per-instance token that authenticates the router WS
+	// connect specifically. apiCallToken is what authenticates
+	// authenticate()/registerModel()/reportStatus/reportMetrics - normally
+	// the same value, except right after auto-provisioning, where the
+	// operator's -api-token was an IAM/account token with no standing on
+	// those anonymous, per-instance-token routes and must be swapped for the
+	// new instance token too.
+	agentToken := *token
+	apiCallToken := *apiToken
+	if agentToken == "" {
+		provisioner := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
+		newToken, err := ensureAgentToken(provisioner, *tokenCache, apiProviderName, model)
+		if err != nil {
+			log.Fatalf("provision agent token: %v", err)
+		}
+		agentToken = newToken
+		apiCallToken = newToken
+	}
+
+	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: apiCallToken, client: &http.Client{}}
+
+	// backendTransport raises MaxIdleConnsPerHost well past Go's default of
+	// 2 - every concurrent chat/stream request this agent handles (see
+	// connection.go's per-request goroutine) opens its own connection to
+	// -llm-url, all to the same host. At the default, anything past the
+	// first 2 concurrent requests gets its connection torn down after use
+	// instead of pooled, paying a fresh TCP handshake next time instead of
+	// reusing one - cheap on localhost, but a real, avoidable cost under
+	// sustained concurrency, and non-trivial if -llm-url is a different host
+	// on the LAN rather than localhost. Constructed here (before
+	// -deploy-vllm) rather than after, since it's pure client configuration
+	// with no dependency on the backend actually being up yet - reporter.go's
+	// reportStatusLoop needs backend.baseURL to scrape vLLM's /metrics
+	// endpoint (vllmmetrics.go) while the backend is still downloading/
+	// booting, not just once it's ready.
+	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
+	backendTransport.MaxIdleConnsPerHost = 128
+	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{Transport: backendTransport}}
+
+	// Telemetry state - constructed before -deploy-vllm so reportStatusLoop
+	// can start immediately and report download/boot progress live, rather
+	// than only once the backend is already ready. health starts true,
+	// matching monitorBackendHealth's own healthy-until-proven-otherwise
+	// starting assumption (backend.go).
+	state := newSharedBackendState(BackendStateStarting)
+	health := &sharedHealth{}
+	health.set(true)
+	metrics := newRequestMetrics()
+	notify := make(chan struct{}, 1)
+	vllmSupHolder := &sharedVLLMSupervisor{}
+
+	// gate ties every router connection to the local backend's health - see
+	// routerGate (gate.go) and monitorBackendHealth's gate.markUnhealthy/
+	// markHealthy calls below. Constructed here (before -deploy-vllm), same
+	// reasoning as backend above - reportStatusLoop's RouterConnections
+	// field needs the one real gate instance every connectAndServe call
+	// later registers into, not a second, unused one.
+	gate := newRouterGate()
+
+	backendType := "other"
+	switch {
+	case *deployVLLM:
+		backendType = "vllm"
+	case *installModel:
+		backendType = "ollama"
+	default:
+		if ollamaServerUp(*llmURL) {
+			backendType = "ollama"
+		}
+	}
+
+	if !*disableTelemetry {
+		go reportStatusLoop(api, backend, vllmSupHolder, gate, health, state, backendType, model, *connections, *statusReportInterval, processStartedAt, notify)
+		go reportMetricsLoop(api, metrics, *metricsReportInterval)
+	}
+
 	var vllmSup *vllmSupervisor
 	if *deployVLLM {
 		if err := ensureVLLMInstalled(); err != nil {
@@ -132,6 +247,9 @@ func runAgent() {
 		if err != nil {
 			log.Fatalf("deploy vllm: %v", err)
 		}
+
+		state.set(BackendStateDownloadingModel)
+		notifyBackendState(notify)
 		if err := downloadModel(*backendModel, *vllmHFToken, *vllmHFHome); err != nil {
 			log.Fatalf("deploy vllm: %v", err)
 		}
@@ -153,45 +271,23 @@ func runAgent() {
 			HFHome:               *vllmHFHome,
 			LogPath:              *vllmLogFile,
 		})
+		vllmSupHolder.set(vllmSup)
 		go vllmSup.run()
 
+		state.set(BackendStateBooting)
+		notifyBackendState(notify)
 		log.Printf("waiting up to %s for vllm serve to become ready on :%s", *vllmBootTimeout, vllmPort)
 		if err := waitVLLMReady(strings.TrimSuffix(*llmURL, "/"), *vllmBootTimeout); err != nil {
 			log.Fatalf("deploy vllm: %v", err)
 		}
 		log.Printf("vllm serve ready on :%s", vllmPort)
+		// Set immediately rather than waiting for monitorBackendHealth's
+		// next 20s poll to catch up - the whole point of this state
+		// machine is reporting progress close to live, and we already know
+		// it's ready right here.
+		state.set(BackendStateReady)
+		notifyBackendState(notify)
 	}
-
-	// -token and -api-token are the same value in practice (one
-	// registration token authenticates both the router connection and the
-	// management API) - fall back to -token so operators only pass one,
-	// while still letting -api-token/API_TOKEN override it if they ever
-	// diverge. Only applies when -token was actually given directly; when
-	// it wasn't, -api-token is an IAM token for provisioning instead, not a
-	// per-instance one, so it must never be used as this fallback.
-	if *apiToken == "" && *token != "" {
-		apiToken = token
-	}
-
-	// backendTransport raises MaxIdleConnsPerHost well past Go's default of
-	// 2 - every concurrent chat/stream request this agent handles (see
-	// connection.go's per-request goroutine) opens its own connection to
-	// -llm-url, all to the same host. At the default, anything past the
-	// first 2 concurrent requests gets its connection torn down after use
-	// instead of pooled, paying a fresh TCP handshake next time instead of
-	// reusing one - cheap on localhost, but a real, avoidable cost under
-	// sustained concurrency, and non-trivial if -llm-url is a different host
-	// on the LAN rather than localhost.
-	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
-	backendTransport.MaxIdleConnsPerHost = 128
-	backend := &llmBackend{baseURL: strings.TrimSuffix(*llmURL, "/"), apiKey: *llmAPIKey, modelOverride: *backendModel, client: &http.Client{Transport: backendTransport}}
-
-	// -backend-model is the model, full stop - box-agent used to fall back
-	// to GET {-llm-url}/v1/models and guess from whatever came back first
-	// when this was unset, which silently registered garbage if -llm-url
-	// pointed at anything other than a genuine single-model backend (e.g.
-	// a multi-model catalog/router). Require it explicitly instead.
-	model := *backendModel
 
 	// The router's provider namespace is "provider/model" (see its
 	// docs/AGENT_PROTOCOL.md and handlers.AgentWSHandler) - fold the
@@ -206,36 +302,6 @@ func runAgent() {
 		providerName = providerName + "/" + model
 	}
 	connectURL := fmt.Sprintf("%s/v1/agents/connect?provider=%s", *routerURL, url.QueryEscape(providerName))
-
-	// The management API's provider is a bare name (e.g. "plusclouds"), not
-	// the router's "provider/model" namespace - strip off anything after the
-	// first "/" in case the operator already passed the combined form to
-	// -provider.
-	apiProviderName := *provider
-	if idx := strings.Index(apiProviderName, "/"); idx != -1 {
-		apiProviderName = apiProviderName[:idx]
-	}
-
-	// agentToken is the per-instance token that authenticates the router WS
-	// connect specifically. apiCallToken is what authenticates
-	// authenticate()/registerModel() - normally the same value, except right
-	// after auto-provisioning, where the operator's -api-token was an
-	// IAM/account token with no standing on those anonymous,
-	// per-instance-token routes and must be swapped for the new instance
-	// token too.
-	agentToken := *token
-	apiCallToken := *apiToken
-	if agentToken == "" {
-		provisioner := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: *apiToken, client: &http.Client{}}
-		newToken, err := ensureAgentToken(provisioner, *tokenCache, apiProviderName, model)
-		if err != nil {
-			log.Fatalf("provision agent token: %v", err)
-		}
-		agentToken = newToken
-		apiCallToken = newToken
-	}
-
-	api := &apiClient{baseURL: strings.TrimSuffix(*apiURL, "/"), token: apiCallToken, client: &http.Client{}}
 
 	identity, err := api.authenticate()
 	if err != nil {
@@ -291,19 +357,14 @@ func runAgent() {
 		SupportedFeatures: splitCSV(*supportedFeatures),
 	}
 
-	// gate ties every router connection below to the local backend's health -
-	// see routerGate (gate.go) and monitorBackendHealth's gate.markUnhealthy/
-	// markHealthy calls.
-	gate := newRouterGate()
-
 	// One monitor for the whole process, not per-connection - -llm-url is one
 	// shared local backend regardless of how many router WebSocket
 	// connections (-connections) proxy to it.
-	go monitorBackendHealth(backend, api, vllmSup, gate)
+	go monitorBackendHealth(backend, api, vllmSup, gate, health, state, notify)
 
 	runConnLoop := func(connIdx int) {
 		for {
-			if err := connectAndServe(connectURL, agentToken, backend, caps, gate, connIdx); err != nil {
+			if err := connectAndServe(connectURL, agentToken, backend, caps, gate, connIdx, metrics); err != nil {
 				log.Printf("connection %d/%d error: %v — reconnecting in 5s", connIdx, *connections, err)
 			}
 			time.Sleep(5 * time.Second)
