@@ -468,7 +468,17 @@ echo "Writing ${conf_path}" >&2
   echo "command=${dest} -router ${ROUTER} -provider ${PROVIDER} -api-url ${API_URL} -llm-url ${LLM_URL}${extra_str:+ $extra_str}"
   echo "autostart=true"
   echo "autorestart=true"
-  echo "startsecs=1"
+  # startsecs=0: a fast failure (bad token rejected near-instantly, a
+  # misconfigured flag, ...) can exit well under supervisord's default
+  # startsecs=1 - three such quick exits get misclassified as a failed
+  # launch (FATAL, "Exited too quickly") rather than a crash to retry, and
+  # supervisord stops trying entirely until a manual `supervisorctl start`.
+  # startsecs=0 makes any spawn count as "started" immediately regardless
+  # of how fast it then exits, so autorestart=true above is what decides
+  # whether it restarts - not exit timing (verified: a bad-token failure
+  # against the real API happened to clear startsecs=1 on its own, purely
+  # from network latency - not a guarantee for a faster local failure).
+  echo "startsecs=0"
   echo "stopsignal=TERM"
   echo "stdout_logfile=/var/log/box-agent.out.log"
   echo "stdout_logfile_maxbytes=10MB"
