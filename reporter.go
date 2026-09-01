@@ -33,6 +33,36 @@ func (s *sharedVLLMSupervisor) get() *vllmSupervisor {
 	return sup
 }
 
+// modelInfo is main.go's auto-detected/-flag-resolved context length and
+// quantization for the running backend (effectiveContextLength/
+// effectiveQuantization) - see sharedModelInfo for why it needs the same
+// set-after-goroutine-start treatment as sharedVLLMSupervisor above.
+type modelInfo struct {
+	ContextLength int
+	Quantization  string
+}
+
+// sharedModelInfo holds modelInfo for reportStatusLoop, populated only once
+// main.go's detection chain (ollamaModelInfo/backend.modelInfo, run after
+// reportStatusLoop's goroutine is already started so downloading/booting
+// progress can be reported live) has finished - see sharedVLLMSupervisor's
+// doc comment for the identical timing problem this solves. get() returns
+// the zero value (both fields empty) until set() is first called, which
+// send() below relies on to correctly omit these fields from reports sent
+// before detection completes.
+type sharedModelInfo struct {
+	v atomic.Value // holds modelInfo
+}
+
+func (s *sharedModelInfo) set(info modelInfo) {
+	s.v.Store(info)
+}
+
+func (s *sharedModelInfo) get() modelInfo {
+	info, _ := s.v.Load().(modelInfo)
+	return info
+}
+
 // reportStatusLoop sends a periodic host/backend/vllm/router-connection
 // snapshot to the management API - descriptive state, not alerting; see
 // reportHealth (backend.go/api.go) for the low-latency transition-alerting
@@ -48,17 +78,20 @@ func (s *sharedVLLMSupervisor) get() *vllmSupervisor {
 // main.go's -deploy-vllm block, on every BackendState transition) - this
 // second path is what makes "watch it download/boot live" work, since the
 // 60s default heartbeat alone would be too slow for that.
-func reportStatusLoop(api *apiClient, backend *llmBackend, vllmSup *sharedVLLMSupervisor, gate *routerGate, health *sharedHealth, state *sharedBackendState, backendType, model string, configuredConns int, interval time.Duration, processStartedAt time.Time, notify <-chan struct{}) {
+func reportStatusLoop(api *apiClient, backend *llmBackend, vllmSup *sharedVLLMSupervisor, gate *routerGate, health *sharedHealth, state *sharedBackendState, modelInfoHolder *sharedModelInfo, backendType, model string, configuredConns int, interval time.Duration, processStartedAt time.Time, notify <-chan struct{}) {
 	send := func() {
+		info := modelInfoHolder.get()
 		req := reportStatusRequest{
 			State:              state.get(),
 			AgentVersion:       version.Version,
 			AgentUptimeSeconds: time.Since(processStartedAt).Seconds(),
 			Host:               collectHostStatus(),
 			Backend: BackendStatus{
-				Type:    backendType,
-				Model:   model,
-				Healthy: health.get(),
+				Type:          backendType,
+				Model:         model,
+				ContextLength: info.ContextLength,
+				Quantization:  info.Quantization,
+				Healthy:       health.get(),
 			},
 			RouterConnections:           gate.liveConnCount(),
 			RouterConnectionsConfigured: configuredConns,

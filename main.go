@@ -212,6 +212,7 @@ func runAgent() {
 	metrics := newRequestMetrics()
 	notify := make(chan struct{}, 1)
 	vllmSupHolder := &sharedVLLMSupervisor{}
+	modelInfoHolder := &sharedModelInfo{}
 
 	// gate ties every router connection to the local backend's health - see
 	// routerGate (gate.go) and monitorBackendHealth's gate.markUnhealthy/
@@ -234,7 +235,7 @@ func runAgent() {
 	}
 
 	if !*disableTelemetry {
-		go reportStatusLoop(api, backend, vllmSupHolder, gate, health, state, backendType, model, *connections, *statusReportInterval, processStartedAt, notify)
+		go reportStatusLoop(api, backend, vllmSupHolder, gate, health, state, modelInfoHolder, backendType, model, *connections, *statusReportInterval, processStartedAt, notify)
 		go reportMetricsLoop(api, metrics, *metricsReportInterval)
 	}
 
@@ -342,6 +343,8 @@ func runAgent() {
 		}
 	}
 	log.Printf("model info: context_length=%d quantization=%q hugging_face_id=%q", effectiveContextLength, effectiveQuantization, hfRepoID)
+	modelInfoHolder.set(modelInfo{ContextLength: effectiveContextLength, Quantization: effectiveQuantization})
+	notifyBackendState(notify)
 
 	if err := api.registerModel(model, apiProviderName, *isPublic, *inputPerMillion, *outputPerMillion, effectiveContextLength, effectiveQuantization, hfRepoID); err != nil {
 		log.Fatalf("register with API: %v", err)
