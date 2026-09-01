@@ -130,7 +130,7 @@ this implementation — see `connection.go`), the agent sends one `"hello"`
 frame declaring what it serves (see `AGENT_PROTOCOL.md` §1a):
 
 ```json
-{"type": "hello", "capabilities": {"context_length": 32768, "quantization": "fp8", "input_modalities": ["text"], "output_modalities": ["text"], "supported_features": ["tools"]}}
+{"type": "hello", "capabilities": {"context_length": 32768, "quantization": "fp8", "input_modalities": ["text"], "output_modalities": ["text"], "supported_features": ["tools", "supports_reasoning"]}}
 ```
 
 This is optional and purely additive — every field may be zero/empty if
@@ -166,6 +166,8 @@ type Usage struct {
     InputTokens  int `json:"input_tokens"`
     OutputTokens int `json:"output_tokens"`
 }
+// This repo additionally carries a ReasoningTokens field (see below) - not
+// part of the minimal spec shown here.
 
 // Capabilities is the optional, operator-asserted one-time self-report sent
 // in a "hello" frame right after connecting (AGENT_PROTOCOL.md §1a). Every
@@ -191,7 +193,11 @@ struct — embedded directly into `Frame` — carrying `temperature`, `top_p`,
 `reasoning_effort`, forwarded to the local backend verbatim (see
 `backend.go`'s `openaiChatRequest`, which embeds the same struct) — both
 extras on top of the minimal spec shown here. See router.agent's
-`docs/openrouter/02-sampling-parameters.md` for the full design.)
+`docs/openrouter/02-sampling-parameters.md` for the full design. Also a
+`ReasoningContent` field on `Frame` (`json:"reasoning_content,omitempty"`,
+`"chunk"`/`"response"` only) and a `ReasoningTokens` field on `Usage`
+(`json:"reasoning_tokens,omitempty"`), for reasoning models served with
+vLLM's `--reasoning-parser` — see `AGENT_PROTOCOL.md` §3.)
 
 The router only ever sends `"chat"` frames. The agent only ever sends
 `"hello"` (once, right after connecting), `"chunk"`, `"response"`, `"final"`,

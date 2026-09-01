@@ -26,6 +26,16 @@ type Frame struct {
 	Tools      []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice json.RawMessage  `json:"tool_choice,omitempty"`
 	Content    string           `json:"content,omitempty"`
+	// ReasoningContent is a reasoning model's chain-of-thought, kept
+	// separate from Content so it's never mistaken for the visible answer -
+	// same split vLLM's own --reasoning-parser makes between a response's
+	// "content" and "reasoning_content" fields (see backend.go's chat/
+	// stream). Only populated when the local backend actually reports it;
+	// most models leave this empty. Reasoning tokens still count against
+	// MaxTokens (see Usage.ReasoningTokens) - vLLM has no separate budget for
+	// them today, so a small MaxTokens can be entirely consumed by reasoning,
+	// leaving Content empty with FinishReason "length".
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 	// LogprobsResult is the local backend's own OpenAI-shaped
 	// choices[0].logprobs object, carried through verbatim as opaque JSON -
 	// "chunk"/"response" frames only, same directions as Content. Named
@@ -140,4 +150,12 @@ type ToolCallFunction struct {
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
+	// ReasoningTokens is the subset of OutputTokens spent on chain-of-thought
+	// (ReasoningContent) rather than the visible answer (Content) - only
+	// populated when the local backend reports
+	// usage.completion_tokens_details.reasoning_tokens (recent vLLM
+	// versions; older ones fold reasoning into OutputTokens with no
+	// breakout, so this stays 0 there even though reasoning still happened
+	// and was still billed).
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }

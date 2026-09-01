@@ -96,7 +96,7 @@ traffic — the agent may send one `hello` frame declaring what it serves:
 | `max_output_length` | Max output tokens the backend supports. |
 | `input_modalities` / `output_modalities` | e.g. `["text"]`, `["text","image"]`. |
 | `quantization` | e.g. `"fp8"`, `"int4"`. |
-| `supported_features` | Capability tags the backend actually supports, e.g. `["tools","json_mode"]`. |
+| `supported_features` | Capability tags the backend actually supports, e.g. `["tools","json_mode","supports_reasoning"]`. |
 
 All fields are optional and operator-asserted — the router does not verify
 them against the backend. They feed the router's `/v1/models` catalog
@@ -113,7 +113,12 @@ This implementation sends `hello` unconditionally right after connecting
 (see `connectAndServe` in `connection.go`), built from the
 `-context-length`/`-max-output-length`/`-quantization`/`-input-modalities`/
 `-output-modalities`/`-supported-features` flags (all optional; see
-`AGENT_BUILD_SPEC.md` §8).
+`AGENT_BUILD_SPEC.md` §8). `"supports_reasoning"` specifically is not left to
+the operator to remember: this implementation adds it automatically whenever
+`-vllm-reasoning-parser` is set, the same way it already refuses to declare
+`"tools"` without the matching tool-calling flags (see `main.go`) — a
+reasoning model booted without that tag is a config bug, not a valid catalog
+state.
 
 ## 2. Keepalive
 
@@ -151,12 +156,13 @@ shape (fields not relevant to a given `type` are omitted):
 | `system` | string | `chat` | System prompt, if any. |
 | `messages` | array | `chat` | `[{"role": "user"\|"assistant", "content": "..."}]`. System-role messages are never sent here — they're already folded into `system`. |
 | `stream` | bool | `chat` | `true` → respond with one or more `"chunk"` frames followed by exactly one `"final"` frame. `false` → respond with exactly one `"response"` frame. |
-| `max_tokens` | int | `chat` | Output token cap, if the caller specified one. |
+| `max_tokens` | int | `chat` | Output token cap, if the caller specified one. This is a single combined budget covering both `reasoning_content` and `content` — vLLM has no separate cap for reasoning today, so a reasoning model can spend the entire budget thinking and return `content: ""` with `finish_reason: "length"`, having still billed the full `max_tokens` as `output_tokens`. Watch `reasoning_tokens` in `usage` to tell that case apart from a genuinely empty response: `reasoning_tokens` at or near `output_tokens` with empty `content` means the cap was too low for this model, not that it had nothing to say. Callers of reasoning models should budget `max_tokens` well above what they'd set for a non-reasoning model of the same size. |
 | `tools` / `tool_choice` | array / raw | `chat` | Forwarded to the local backend as-is; see `backend.go`. |
 | `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `min_p`, `top_a`, `seed`, `stop`, `logit_bias`, `logprobs`, `top_logprobs`, `response_format`, `parallel_tool_calls`, `reasoning`, `reasoning_effort` | various | `chat` | Sampling/output-control parameters, forwarded to the local backend verbatim - same field names/types OpenAI's API uses. This agent doesn't filter by what the backend actually supports; unsupported fields are the backend's concern to ignore. See router.agent's `docs/openrouter/02-sampling-parameters.md` and this repo's `SamplingParams` in `frame.go`. All optional. |
 | `content` | string | `chunk`, `response` | Output text. For `chunk`, an incremental delta (not cumulative). For `response`, the full output. |
+| `reasoning_content` | string | `chunk`, `response` | A reasoning model's chain-of-thought, kept separate from `content` so it's never mistaken for the visible answer. Same split as vLLM's own `--reasoning-parser` output (`message.reasoning_content` / `delta.reasoning_content`). Only present when the local backend actually reports it — most backends/models leave this unset, in which case any reasoning the model does is invisibly folded into billed `output_tokens` with nothing to show for it (see `reasoning_tokens` below and the `max_tokens` note under §4). |
 | `logprobs_result` | object | `chunk`, `response` | The local backend's own `choices[0].logprobs` object, forwarded verbatim as opaque JSON — every OpenAI-compatible backend (vLLM included) already emits this in OpenAI's documented shape, so there's nothing to re-model. Only present when the request's `logprobs` field asked for it. Named distinctly from the request-side `logprobs` (a bool) since they're different things on this one flat frame shape. |
-| `usage` | object | `response`, `final` | `{"input_tokens": int, "output_tokens": int}`. Omit `cost_usd` — the router computes cost from its own pricing config. |
+| `usage` | object | `response`, `final` | `{"input_tokens": int, "output_tokens": int, "reasoning_tokens": int}`. `reasoning_tokens` is the subset of `output_tokens` spent on `reasoning_content` rather than `content` — omitted/`0` unless the backend reports `usage.completion_tokens_details.reasoning_tokens` (recent vLLM only; see backend.go). Omit `cost_usd` — the router computes cost from its own pricing config. |
 | `finish_reason` | string | `response`, `final` | One of `"stop"`, `"length"`, `"tool_calls"`, `"content_filter"` — normalize to this vocabulary regardless of what the underlying LLM server reports. |
 | `tool_calls` | array | `response`, `final` | Accumulated across a stream and attached once, like `usage`/`finish_reason`, not streamed incrementally. |
 | `error` | string | `error` | Human-readable error message. Sent instead of `response`/`final` if the request failed. |
@@ -179,11 +185,19 @@ Agent  → Router: {"type":"response","request_id":"r1","content":"Hello!",
 Router → Agent:  {"type":"chat","request_id":"r2","model":"llama-3.1-70b-instruct",
                    "messages":[{"role":"user","content":"hi"}],"stream":true}
 
+Agent  → Router: {"type":"chunk","request_id":"r2","reasoning_content":"The user is greeting me, "}
+Agent  → Router: {"type":"chunk","request_id":"r2","reasoning_content":"a simple reply suffices."}
 Agent  → Router: {"type":"chunk","request_id":"r2","content":"Hel"}
 Agent  → Router: {"type":"chunk","request_id":"r2","content":"lo!"}
 Agent  → Router: {"type":"final","request_id":"r2",
-                   "usage":{"input_tokens":5,"output_tokens":3},"finish_reason":"stop"}
+                   "usage":{"input_tokens":5,"output_tokens":19,"reasoning_tokens":16},"finish_reason":"stop"}
 ```
+
+`reasoning_content` and `content` chunks are never mixed on the same
+`"chunk"` frame — a reasoning model emits a run of `reasoning_content`
+chunks first, then switches to `content` once it starts the visible answer
+(or never switches, if `max_tokens` runs out first — see the `max_tokens`
+row above).
 
 The router forwards each `chunk` to the customer as an SSE event as soon as
 it arrives — there's no buffering on the router side, so latency between an

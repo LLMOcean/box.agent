@@ -104,6 +104,11 @@ func runLLMBenchmark(backend *llmBackend, model, prompt string) LLMBenchmark {
 				firstTokenAt = time.Now()
 			}
 		},
+		func(reasoningChunk string) {
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
+		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			total := time.Since(start)
 			result.TotalMs = float64(total.Milliseconds())

@@ -151,7 +151,7 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 	}
 
 	if !req.Stream {
-		content, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
+		content, reasoningContent, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
 			window.recordError()
 			send(errorFrame(req.RequestID, err))
@@ -160,7 +160,7 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 		window.recordNonStreamLatency(time.Since(recvAt))
 		window.recordTokens(usage)
 		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
-		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs})
+		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, ReasoningContent: reasoningContent, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs})
 		return
 	}
 
@@ -183,6 +183,9 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 				return
 			}
 			send(Frame{Type: "chunk", RequestID: req.RequestID, Content: chunk, LogprobsResult: logprobs})
+		},
+		func(reasoningChunk string) {
+			send(Frame{Type: "chunk", RequestID: req.RequestID, ReasoningContent: reasoningChunk})
 		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			window.recordTokens(usage)
