@@ -116,7 +116,7 @@ func connectAndServe(connectURL, token string, backend *llmBackend, caps *Capabi
 			wg.Add(1)
 			go func(req Frame, recvAt time.Time) {
 				defer wg.Done()
-				handleChat(req, recvAt, backend, send, metrics)
+				handleChat(req, recvAt, backend, caps, send, metrics)
 			}(f, recvAt)
 		case "benchmark":
 			wg.Add(1)
@@ -133,7 +133,7 @@ func handleBenchmark(req Frame, backend *llmBackend, send func(Frame) error) {
 	send(Frame{Type: "benchmark_result", RequestID: req.RequestID, Benchmark: &result})
 }
 
-func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Frame) error, metrics *requestMetrics) {
+func handleChat(req Frame, recvAt time.Time, backend *llmBackend, caps *Capabilities, send func(Frame) error, metrics *requestMetrics) {
 	window := metrics.window()
 	window.recordRequestStart()
 
@@ -150,8 +150,13 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 		})
 	}
 
+	maxTokens, clamped := clampMaxTokens(req.MaxTokens, caps)
+	if clamped {
+		log.Printf("request_id=%s max_tokens=%d exceeds this backend's max_output_length=%d - clamping", req.RequestID, req.MaxTokens, caps.MaxOutputLength)
+	}
+
 	if !req.Stream {
-		content, reasoningContent, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
+		content, reasoningContent, usage, finishReason, toolCalls, logprobs, err := backend.chat(req.Model, msgs, maxTokens, req.Tools, req.ToolChoice, req.SamplingParams)
 		if err != nil {
 			window.recordError()
 			send(errorFrame(req.RequestID, err))
@@ -160,12 +165,16 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 		window.recordNonStreamLatency(time.Since(recvAt))
 		window.recordTokens(usage)
 		debugLog("[agent] request_id=%s backend_latency_ms=%d (non-streaming)", req.RequestID, time.Since(recvAt).Milliseconds())
-		send(Frame{Type: "response", RequestID: req.RequestID, Content: content, ReasoningContent: reasoningContent, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs})
+		resp := Frame{Type: "response", RequestID: req.RequestID, Content: content, ReasoningContent: reasoningContent, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls, LogprobsResult: logprobs}
+		if clamped {
+			resp.EffectiveMaxTokens = maxTokens
+		}
+		send(resp)
 		return
 	}
 
 	firstChunk := true // backend.stream calls onChunk synchronously from one goroutine - no lock needed
-	err := backend.stream(req.Model, msgs, req.MaxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
+	err := backend.stream(req.Model, msgs, maxTokens, req.Tools, req.ToolChoice, req.SamplingParams,
 		func(chunk string, logprobs json.RawMessage) {
 			if firstChunk {
 				firstChunk = false
@@ -189,12 +198,31 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, send func(Fram
 		},
 		func(usage *Usage, finishReason string, toolCalls []ToolCall) {
 			window.recordTokens(usage)
-			send(Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls})
+			final := Frame{Type: "final", RequestID: req.RequestID, Usage: usage, FinishReason: finishReason, ToolCalls: toolCalls}
+			if clamped {
+				final.EffectiveMaxTokens = maxTokens
+			}
+			send(final)
 		})
 	if err != nil {
 		window.recordError()
 		send(errorFrame(req.RequestID, err))
 	}
+}
+
+// clampMaxTokens caps requested against caps.MaxOutputLength (this backend's
+// own advertised output limit - see -max-output-length in main.go), so a
+// caller-supplied max_tokens far beyond what the backend can actually
+// produce (e.g. 999999) isn't forwarded as-is and silently misbehaves
+// downstream. requested <= 0 means the caller didn't set one at all and is
+// passed through unchanged - there's nothing to clamp. clamped reports
+// whether the returned value differs from requested, so callers know when
+// to surface it back to the router via Frame.EffectiveMaxTokens.
+func clampMaxTokens(requested int, caps *Capabilities) (effective int, clamped bool) {
+	if requested <= 0 || caps == nil || caps.MaxOutputLength <= 0 || requested <= caps.MaxOutputLength {
+		return requested, false
+	}
+	return caps.MaxOutputLength, true
 }
 
 // errorFrame builds an "error" Frame for err, attaching the backend's real

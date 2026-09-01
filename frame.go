@@ -46,7 +46,15 @@ type Frame struct {
 	Usage          *Usage          `json:"usage,omitempty"`
 	FinishReason   string          `json:"finish_reason,omitempty"`
 	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	// EffectiveMaxTokens is set on "response"/"final" only when the request's
+	// MaxTokens exceeded this backend's advertised Capabilities.MaxOutputLength
+	// and was clamped down before being sent to the local backend - so a
+	// caller who asked for e.g. 999999 finds out what was actually used
+	// instead of it being silently substituted. Omitted when MaxTokens was
+	// honored as requested (including when this agent has no
+	// MaxOutputLength to clamp against at all).
+	EffectiveMaxTokens int    `json:"effective_max_tokens,omitempty"`
+	Error              string `json:"error,omitempty"`
 	// ErrorStatusCode is the local LLM backend's real HTTP status when Error
 	// came from a non-200 backend response (see backendError in backend.go) -
 	// "error" frames only, 0 when unknown (e.g. a network-level failure
