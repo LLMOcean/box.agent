@@ -210,19 +210,33 @@ func handleChat(req Frame, recvAt time.Time, backend *llmBackend, caps *Capabili
 	}
 }
 
-// clampMaxTokens caps requested against caps.MaxOutputLength (this backend's
-// own advertised output limit - see -max-output-length in main.go), so a
+// clampMaxTokens caps requested against this backend's real ceiling, so a
 // caller-supplied max_tokens far beyond what the backend can actually
-// produce (e.g. 999999) isn't forwarded as-is and silently misbehaves
-// downstream. requested <= 0 means the caller didn't set one at all and is
-// passed through unchanged - there's nothing to clamp. clamped reports
-// whether the returned value differs from requested, so callers know when
-// to surface it back to the router via Frame.EffectiveMaxTokens.
+// produce (e.g. 999999, or a client's "no limit" sentinel like
+// math.MaxInt32) isn't forwarded as-is and silently misbehaves downstream.
+// The ceiling is the smaller of caps.MaxOutputLength (an operator-set,
+// optional cap - see -max-output-length in main.go, 0 when unset) and
+// caps.ContextLength (auto-detected model context length, registered with
+// the orchestrator as context_length): vLLM rejects any request with
+// max_tokens > max_model_len outright, regardless of prompt size, so
+// ContextLength alone is enough to prevent that even when an operator never
+// bothered to set -max-output-length. requested <= 0 means the caller didn't
+// set one at all and is passed through unchanged - there's nothing to
+// clamp. clamped reports whether the returned value differs from requested,
+// so callers know when to surface it back to the router via
+// Frame.EffectiveMaxTokens.
 func clampMaxTokens(requested int, caps *Capabilities) (effective int, clamped bool) {
-	if requested <= 0 || caps == nil || caps.MaxOutputLength <= 0 || requested <= caps.MaxOutputLength {
+	if requested <= 0 || caps == nil {
 		return requested, false
 	}
-	return caps.MaxOutputLength, true
+	ceiling := caps.MaxOutputLength
+	if caps.ContextLength > 0 && (ceiling <= 0 || caps.ContextLength < ceiling) {
+		ceiling = caps.ContextLength
+	}
+	if ceiling <= 0 || requested <= ceiling {
+		return requested, false
+	}
+	return ceiling, true
 }
 
 // errorFrame builds an "error" Frame for err, attaching the backend's real
